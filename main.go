@@ -36,23 +36,38 @@ func (p *Guidance) createDefault() {
 	}
 }
 
-func (p *Guidance) exclude(ri uint64) {
-	p.Epoch += uint64(clusterSize)
-	p.LiveR[ri].Alive = false
-	p.LiveR[ri].StartKey = 0
-	p.LiveR[ri].EndKey = 0
-	p.ClusterSize -= 1
+func (p *Guidance) exclude(me uint64, ri uint64) {
+	offset := p.Epoch % (me + 1)
+	p.Epoch += uint64(clusterSize) + offset
+	if p.LiveR[ri].Alive {
+		p.LiveR[ri].Alive = false
+		p.LiveR[ri].StartKey = 0
+		p.LiveR[ri].EndKey = 0
+		p.ClusterSize -= 1
+	}
+	p.recalc()
+}
+
+func (p *Guidance) include(me uint64, ri uint64) {
+	offset := p.Epoch % (me + 1)
+	p.Epoch += uint64(clusterSize) + offset
+	if !p.LiveR[ri].Alive {
+		p.LiveR[ri].Alive = true
+		p.ClusterSize += 1
+	}
+	p.recalc()
+}
+
+func (p *Guidance) recalc() {
+	var aliveidx uint64 = 0
 	for i := range p.LiveR {
 		if !p.LiveR[i].Alive {
 			continue
 		}
-		p.LiveR[i].StartKey = uint64(i) * maxKeyHash / p.ClusterSize
-		p.LiveR[i].EndKey = uint64(i+1) * maxKeyHash / p.ClusterSize
+		p.LiveR[i].StartKey = aliveidx * maxKeyHash / p.ClusterSize
+		p.LiveR[i].EndKey = (aliveidx + 1) * maxKeyHash / p.ClusterSize
+		aliveidx += 1
 	}
-}
-
-func (p *Guidance) include(ri uint64) {
-
 }
 
 type RPCStub int
@@ -69,6 +84,7 @@ type RPCEndpoint struct {
 	client    *rpc.Client
 	connectch chan bool
 	connected bool
+	replica   *Replica
 }
 
 func (p *RPCEndpoint) connect() {
@@ -112,6 +128,11 @@ func (p *RPCEndpoint) callGossip(args *GossipRPCArgs) bool {
 
 func (p *RPCEndpoint) GossipRPC(args *GossipRPCArgs, reply *int) error {
 	log.Printf("calling gossip, args: %+v", args)
+
+	// if p.replica.guide.Epoch < args.Guide.Epoch {
+	// 	p.replica.guide.Epoch = args.Guide.Epoch
+	// }
+
 	return nil
 }
 
@@ -156,6 +177,7 @@ func (p *Replica) init() {
 		}
 		log.Printf("i = %v", i)
 		p.peers[i] = &RPCEndpoint{}
+		p.peers[i].replica = p
 		p.peers[i].connectch = make(chan bool)
 		p.peers[i].address = newAddress(defaultAddress, uint64(i))
 		p.peers[i].ID = uint64(i)
@@ -204,19 +226,24 @@ func (p *Replica) gossip() {
 				}
 			}(peer, i)
 		}
-		time.Sleep(time.Millisecond * 1000)
+		time.Sleep(time.Millisecond * 3000)
 		for i, _ := range p.peers {
 			if uint64(i) == p.ID {
 				continue
 			}
 			fc := atomic.LoadUint64(&failureCount[i])
 			log.Printf("peer %d failure count: %v", i, fc)
-			if fc == 3 {
-				p.guide.exclude(uint64(i))
-			} else if fc == 0 {
-
+			if p.guide.LiveR[i].Alive {
+				if fc == 3 {
+					p.guide.exclude(p.ID, uint64(i))
+				}
+			} else {
+				if fc == 0 {
+					p.guide.include(p.ID, uint64(i))
+				}
 			}
 		}
+		log.Printf("local guide: %+v", p.guide)
 	}
 }
 
