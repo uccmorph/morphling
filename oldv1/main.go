@@ -87,9 +87,11 @@ func (p *Guidance) checkAndReplace(exgui *Guidance) bool {
 type RPCStub int
 
 type GossipRPCArgs struct {
-	Guide    Guidance
-	Workload uint64
-	SenderID uint64
+	Guide        Guidance
+	Workload     uint64
+	EdgeWorkload []uint64
+	EdgeSize     uint64
+	SenderID     uint64
 }
 
 type RPCEndpoint struct {
