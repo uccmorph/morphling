@@ -9,13 +9,25 @@ import (
 
 type ReplicaMsg struct {
 	Type int
+	From uint64
+	Meta interface{}
 	Data interface{}
 }
 
-func NewReplicationMsg(data interface{}) *ReplicaMsg {
+func CreateReplicationMsg(self uint64, meta, data interface{}) *ReplicaMsg {
 	return &ReplicaMsg{
 		Type: 0,
+		From: self,
+		Meta: meta,
 		Data: data,
+	}
+}
+
+func CreateSyncMsg(self uint64, meta interface{}) *ReplicaMsg {
+	return &ReplicaMsg{
+		Type: 2,
+		From: self,
+		Meta: meta,
 	}
 }
 
@@ -38,15 +50,17 @@ type SMRServer struct {
 	// CheckSafety is for follower to check validity, racing and safety
 	CheckSafety func(ectx *entryContext) bool
 
-	quorum  uint64
-	peerNum uint64 // ID is numbered from 0, it may bring difficulties when reconfig
-	me      uint64
+	quorum      uint64
+	clusterSize uint64 // ID is numbered from 0, it may bring difficulties when reconfig
+	me          uint64
+	peersID     []uint64
 }
 
 type SMRStorage interface {
 	// Store() return entry meta, so SMRServer can keep it and used for commit or apply
 	Store(entry interface{}) interface{}
 	Exist(entry interface{}) bool
+	CheckSafety(emeta interface{}) bool
 	Commit(meta interface{})
 }
 
@@ -57,20 +71,81 @@ type SMRNetwork interface {
 
 func NewSMRServer(nums uint64, me uint64, s SMRStorage, n SMRNetwork) *SMRServer {
 	p := &SMRServer{}
-	p.peerNum = nums
+	p.clusterSize = nums
 	p.quorum = (nums + 1) / 2
 	p.me = me
 	p.log = s
 	p.network = n
+	p.peersID = make([]uint64, 0, nums)
+	// generate default peer id
+	for i := 0; i < int(nums); i++ {
+		if uint64(i) == me {
+			continue
+		}
+		p.peersID = append(p.peersID, uint64(i))
+	}
 
 	return p
+}
+
+func (p *SMRServer) HandleNewEntry(entry interface{}) {
+	ctx, cancel := context.WithCancel(context.TODO())
+	ectx := &entryContext{
+		entry:        entry,
+		agreeCount:   1,
+		peerResultCh: make(chan *voteResult),
+		quorumCh:     make(chan int),
+		peerVotes:    make([]bool, p.clusterSize),
+		done:         ctx,
+		cancelFn:     cancel,
+	}
+	defer func() {
+		close(ectx.peerResultCh)
+		close(ectx.quorumCh)
+	}()
+	ectx.peerVotes[p.me] = true
+
+	p.storeLocal(ectx)
+	p.replicate(ectx)
+	p.commitLocal(ectx)
+}
+
+func (p *SMRServer) HandleReplicaMsg(msg *ReplicaMsg) {
+	switch msg.Type {
+	case 0:
+		// replicate msg
+		p.HandlePeerReplication(msg.Meta, msg.Data)
+	case 1:
+		// recovery msg
+	case 2:
+		// sync commit
+	}
+}
+
+func (p *SMRServer) HandlePeerReplication(emeta, entry interface{}) {
+	if !p.log.CheckSafety(emeta) {
+		return
+	}
+	p.log.Store(entry)
+}
+
+func (p *SMRServer) PullMissingEntry(meta interface{}) {
+
+}
+
+func (p *SMRServer) Sync(emeta interface{}) {
+
+}
+
+func (p *SMRServer) SyncWithEntry(emeta, entry interface{}) {
+
 }
 
 func (p *SMRServer) replicate(ectx *entryContext) {
 	p.asyncGatherVotes(ectx)
 
 RETRY:
-	p.bcastMsg(ectx, NewReplicationMsg(ectx.entry))
+	p.bcastMsg(ectx, CreateReplicationMsg(p.me, ectx.emeta, ectx.entry))
 	res := p.waitQuorum(ectx)
 	if res != 0 {
 		if ectx.retryCount == 10 {
@@ -86,34 +161,8 @@ RETRY:
 	}
 }
 
-func (p *SMRServer) HandleNewEntry(entry interface{}) {
-	ctx, cancel := context.WithCancel(context.TODO())
-	ectx := &entryContext{
-		entry:        entry,
-		agreeCount:   1,
-		peerResultCh: make(chan *voteResult),
-		quorumCh:     make(chan int),
-		peerVotes:    make([]bool, p.peerNum),
-		done:         ctx,
-		cancelFn:     cancel,
-	}
-	defer func() {
-		close(ectx.peerResultCh)
-		close(ectx.quorumCh)
-	}()
-	ectx.peerVotes[p.me] = true
-
-	p.storeLocal(ectx)
-	p.replicate(ectx)
-	p.commitLocal(ectx)
-}
-
-func (p *SMRServer) HandlePeerReplication(entry interface{}) {
-
-}
-
 func (p *SMRServer) bcastMsg(ectx *entryContext, msg *ReplicaMsg) {
-	for id := 0; id < int(p.peerNum); id++ {
+	for id := 0; id < int(p.clusterSize); id++ {
 		if id == int(p.me) {
 			continue
 		}
@@ -124,7 +173,13 @@ func (p *SMRServer) bcastMsg(ectx *entryContext, msg *ReplicaMsg) {
 	}
 }
 
-// result: 0 for success; 1 for need retry this entry; 2 for need give up
+/*
+result:
+	0 for success;
+	1 for need retry this entry;
+	2 for need sync and give up this entry;
+	3 for notify staleness
+*/
 type voteResult struct {
 	ID     uint64
 	result uint64
@@ -145,6 +200,7 @@ func (p *SMRServer) asyncGatherVotes(ectx *entryContext) {
 				}
 			} else if res.result == 1 {
 				// todo: handle executor timeout, or just ignore
+				p.asyncSendMsg(res.ID, ectx, CreateReplicationMsg(p.me, ectx.emeta, ectx.entry))
 			} else if res.result == 2 {
 				// A reject vote
 				ectx.peerVotes[res.ID] = true
@@ -152,6 +208,7 @@ func (p *SMRServer) asyncGatherVotes(ectx *entryContext) {
 				if ectx.rejectCount == p.quorum {
 					ectx.quorumCh <- 2
 				}
+
 			}
 		}
 	}()
@@ -179,10 +236,7 @@ func (p *SMRServer) asyncSendMsg(id uint64, ectx *entryContext, msg *ReplicaMsg)
 			if !timeout.Stop() {
 				<-timeout.C
 			}
-			ectx.peerResultCh <- &voteResult{
-				ID:     id,
-				result: 2,
-			}
+			return
 		case <-timeout.C:
 			ectx.peerResultCh <- &voteResult{
 				ID:     id,
@@ -209,4 +263,16 @@ func (p *SMRServer) storeLocal(ectx *entryContext) {
 
 func (p *SMRServer) commitLocal(ectx *entryContext) {
 	p.log.Commit(ectx.emeta)
+}
+
+func (p *SMRServer) runAllPeers() {
+	for _, id := range p.peersID {
+		go p.peerLoop(id)
+	}
+}
+
+func (p *SMRServer) peerLoop(id uint64) {
+	for {
+
+	}
 }
