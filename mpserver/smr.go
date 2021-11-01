@@ -114,7 +114,7 @@ func (p *SMRServer) HandleReplicaMsg(msg *ReplicaMsg) {
 	switch msg.Type {
 	case 0:
 		// replicate msg
-		p.HandlePeerReplication(msg.Meta, msg.Data)
+		p.processPeerReplication(msg.Meta, msg.Data)
 	case 1:
 		// recovery msg
 	case 2:
@@ -122,7 +122,7 @@ func (p *SMRServer) HandleReplicaMsg(msg *ReplicaMsg) {
 	}
 }
 
-func (p *SMRServer) HandlePeerReplication(emeta, entry interface{}) {
+func (p *SMRServer) processPeerReplication(emeta, entry interface{}) {
 	if !p.log.CheckSafety(emeta) {
 		return
 	}
@@ -263,16 +263,4 @@ func (p *SMRServer) storeLocal(ectx *entryContext) {
 
 func (p *SMRServer) commitLocal(ectx *entryContext) {
 	p.log.Commit(ectx.emeta)
-}
-
-func (p *SMRServer) runAllPeers() {
-	for _, id := range p.peersID {
-		go p.peerLoop(id)
-	}
-}
-
-func (p *SMRServer) peerLoop(id uint64) {
-	for {
-
-	}
 }
