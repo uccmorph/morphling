@@ -7,8 +7,14 @@ import (
 	"time"
 )
 
+type msgType uint64
+
+const msgTypeClient msgType = 0
+const msgTypeAppend msgType = 1
+const msgTypeGossip msgType = 2
+
 type ReplicaMsg struct {
-	Type int
+	Type msgType
 	From uint64
 	Meta interface{}
 	Data interface{}
