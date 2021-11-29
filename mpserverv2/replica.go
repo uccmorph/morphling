@@ -2,39 +2,6 @@ package mpserverv2
 
 import "fmt"
 
-type msgType uint64
-type serverID uint64
-
-const (
-	msgTypeClient msgType = iota
-	msgTypeClientReply
-	msgTypeAppend
-	msgTypeAppendReply
-	msgTypeGossip
-)
-
-type ReplicaMsg struct {
-	Type          msgType
-	From          serverID
-	Success       replyStatus
-	KeyHash       uint64
-	Guide         *Guidance
-	CommitTo      uint64
-	PrevIdx       uint64
-	PrevEpoch     uint64
-	Command       interface{}
-	FastRewindIdx uint64
-}
-
-type replyStatus uint64
-
-const (
-	replyStatusSuccess replyStatus = iota
-	replyStatusStaleGuidance
-	replyStatusMissingEntries
-	replyStatusMismatchEntry
-)
-
 type ReplicaStatus struct {
 	Alive       bool
 	StartKeyPos uint64
@@ -80,6 +47,7 @@ type Replica struct {
 	localGuidance Guidance
 	log           []groupLogger
 	msgCh         chan *ReplicaMsg
+	clientCh      chan *ClientMsg
 	me            serverID
 	peers         []serverID
 	sendCh        chan *sendInfo
@@ -102,56 +70,30 @@ func (p *Replica) mainLoop() {
 	for {
 		select {
 		case msg := <-p.msgCh:
-			p.handleMsg(msg)
-
+			p.HandleMsg(msg)
+		case cmsg := <-p.clientCh:
+			p.HandleClientMsg(cmsg)
 		}
 	}
 }
 
-func (p *Replica) handleMsg(msg *ReplicaMsg) {
+func (p *Replica) GetMsgCh() chan *ReplicaMsg {
+	return p.msgCh
+}
+
+func (p *Replica) HandleClientMsg(msg *ClientMsg) {
+	switch msg.Type {
+	case MsgTypeGetGuidance:
+
+	}
+}
+
+func (p *Replica) HandleMsg(msg *ReplicaMsg) {
 	guide := p.localGuidance
 	pos := calcKeyPos(msg.KeyHash, guide.GroupMask, guide.GroupSize)
 	switch msg.Type {
-	case msgTypeClient:
-		guide.triDirectionCompare(msg.Guide,
-			func() {
 
-				log := p.log[pos]
-				prevEntry := log.glog[len(log.glog)-1]
-				entry := logEntry{
-					Epoch: guide.Epoch,
-					Index: uint64(len(log.glog)),
-					Cmd:   msg.Command,
-				}
-				log.glog = append(log.glog, entry)
-
-				appendMsg := &ReplicaMsg{
-					Type:      msgTypeAppend,
-					From:      p.me,
-					KeyHash:   msg.KeyHash,
-					Guide:     &guide,
-					CommitTo:  log.commitTo,
-					PrevIdx:   prevEntry.Index,
-					PrevEpoch: prevEntry.Epoch,
-					Command:   msg.Command,
-				}
-				p.sendAppendMsg(appendMsg)
-			},
-			func() {
-				reply := &ReplicaMsg{
-					Type:    msgTypeClientReply,
-					From:    p.me,
-					Success: replyStatusStaleGuidance,
-					Guide:   &guide,
-				}
-				p.asyncSendToClient(msg.From, reply)
-			},
-			func() {
-				panic(fmt.Sprintf("local guidance is older than client's? local: %+v, client's: %+v",
-					guide, msg.Guide))
-			})
-
-	case msgTypeAppend:
+	case MsgTypeAppend:
 		guide.triDirectionCompare(msg.Guide,
 			func() {
 				log := p.log[pos]
@@ -159,7 +101,7 @@ func (p *Replica) handleMsg(msg *ReplicaMsg) {
 				if prevEntry.Index < msg.PrevIdx {
 					// have some holes, ask for missing entries
 					reply := &ReplicaMsg{
-						Type:    msgTypeAppendReply,
+						Type:    MsgTypeAppendReply,
 						From:    p.me,
 						Success: replyStatusMissingEntries,
 						Guide:   &guide,
@@ -184,7 +126,7 @@ func (p *Replica) handleMsg(msg *ReplicaMsg) {
 				if prevEntry.Epoch < msg.PrevEpoch {
 					// still not match, notify leader
 					reply := &ReplicaMsg{
-						Type:    msgTypeAppendReply,
+						Type:    MsgTypeAppendReply,
 						From:    p.me,
 						Success: replyStatusMismatchEntry,
 						Guide:   &guide,
@@ -211,7 +153,7 @@ func (p *Replica) handleMsg(msg *ReplicaMsg) {
 					p.commitFromTo(&log, log.commitTo+1, msg.CommitTo)
 				}
 				reply := &ReplicaMsg{
-					Type:    msgTypeAppendReply,
+					Type:    MsgTypeAppendReply,
 					From:    p.me,
 					Success: replyStatusSuccess,
 					Guide:   &guide,
@@ -220,7 +162,7 @@ func (p *Replica) handleMsg(msg *ReplicaMsg) {
 			},
 			func() {
 				reply := &ReplicaMsg{
-					Type:    msgTypeAppendReply,
+					Type:    MsgTypeAppendReply,
 					From:    p.me,
 					Success: replyStatusStaleGuidance,
 					Guide:   &guide,
@@ -234,7 +176,7 @@ func (p *Replica) handleMsg(msg *ReplicaMsg) {
 				p.prepareGuidanceTransfer(msg.Guide)
 			})
 
-	case msgTypeAppendReply:
+	case MsgTypeAppendReply:
 		if msg.Success == replyStatusSuccess {
 			guide.triDirectionCompare(msg.Guide,
 				func() {
@@ -247,11 +189,11 @@ func (p *Replica) handleMsg(msg *ReplicaMsg) {
 
 				})
 		}
-	case msgTypeGossip:
+	case MsgTypeGossip:
 	}
 }
 
-func (p *Replica) processAppendEntries()
+func (p *Replica) processAppendEntries() {}
 
 func (p *Replica) commitFromTo(log *groupLogger, start, end uint64) {}
 
