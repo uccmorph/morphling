@@ -1,2 +1,4 @@
 morphling
 .vscode
+cmd/client/client
+cmd/server/server
