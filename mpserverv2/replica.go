@@ -1,6 +1,9 @@
 package mpserverv2
 
-import "fmt"
+import (
+	"fmt"
+	"strconv"
+)
 
 type ReplicaStatus struct {
 	Alive       bool
@@ -8,12 +11,22 @@ type ReplicaStatus struct {
 	EndKeyPos   uint64
 }
 
-type Guidance struct {
-	Epoch     uint64
-	AliveNum  uint64
-	GroupMask uint64 // KeyPos = KeyHash & GroupMask >> GroupSize.
-	GroupSize uint64 // The number of  1 digits in KeyMask, however it can be deduced from GroupMask
-	Cluster   []ReplicaStatus
+func (p *ReplicaStatus) KeyisIn(pos uint64) bool {
+	if !p.Alive {
+		return false
+	}
+	if p.StartKeyPos > p.EndKeyPos {
+		if p.StartKeyPos <= pos && pos < defaultKeySpace {
+			return true
+		} else if 0 <= pos && pos < p.EndKeyPos {
+			return true
+		}
+	} else {
+		if p.StartKeyPos <= pos && pos < p.EndKeyPos {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *Guidance) triDirectionCompare(other *Guidance, equal, lhsnewer, lhsolder func()) {
@@ -46,11 +59,11 @@ type groupLogger struct {
 type Replica struct {
 	localGuidance Guidance
 	log           []groupLogger
-	msgCh         chan *ReplicaMsg
-	clientCh      chan *ClientMsg
+	msgCh         chan *HandlerInfo
 	me            serverID
 	peers         []serverID
 	sendCh        chan *sendInfo
+	storage       *MemStorage
 }
 
 type sendInfo struct {
@@ -59,9 +72,10 @@ type sendInfo struct {
 	msg      *ReplicaMsg
 }
 
-func CreateReplica() *Replica {
+func CreateReplica(g *Guidance, s *MemStorage) *Replica {
 	p := &Replica{}
-
+	p.localGuidance = *g
+	p.storage = s
 	go p.mainLoop()
 	return p
 }
@@ -70,29 +84,45 @@ func (p *Replica) mainLoop() {
 	for {
 		select {
 		case msg := <-p.msgCh:
-			p.HandleMsg(msg)
-		case cmsg := <-p.clientCh:
-			p.HandleClientMsg(cmsg)
+			if msg.IsClient {
+				p.HandleClientMsg(msg)
+			} else {
+				p.HandleMsg(msg.Args)
+			}
 		}
 	}
 }
 
-func (p *Replica) GetMsgCh() chan *ReplicaMsg {
+func (p *Replica) GetMsgCh() chan *HandlerInfo {
 	return p.msgCh
 }
 
-func (p *Replica) HandleClientMsg(msg *ClientMsg) {
-	switch msg.Type {
+func (p *Replica) HandleClientMsg(msg *HandlerInfo) {
+	args := msg.Cargs
+	reply := msg.Creply
+	guide := p.localGuidance
+	// pos := calcKeyPos(args.KeyHash, guide.GroupMask, guide.GroupSize)
+	switch args.Type {
 	case MsgTypeGetGuidance:
+		reply.Guide = &guide
+		reply.Type = args.Type
+		msg.Res <- msg
 
+	case MsgTypeClientRead:
+		keyStr := strconv.FormatUint(args.KeyHash, 10)
+		value := p.storage.Get(CfDefault, []byte(keyStr))
+		reply.Data = value
+		reply.KeyHash = args.KeyHash
+		reply.Guide = &guide
+		reply.Type = args.Type
+		msg.Res <- msg
 	}
 }
 
 func (p *Replica) HandleMsg(msg *ReplicaMsg) {
 	guide := p.localGuidance
-	pos := calcKeyPos(msg.KeyHash, guide.GroupMask, guide.GroupSize)
+	pos := CalcKeyPos(msg.KeyHash, guide.GroupMask, guide.GroupSize)
 	switch msg.Type {
-
 	case MsgTypeAppend:
 		guide.triDirectionCompare(msg.Guide,
 			func() {
@@ -175,7 +205,6 @@ func (p *Replica) HandleMsg(msg *ReplicaMsg) {
 				// since such transfer doesn't require all alive replicas participating
 				p.prepareGuidanceTransfer(msg.Guide)
 			})
-
 	case MsgTypeAppendReply:
 		if msg.Success == replyStatusSuccess {
 			guide.triDirectionCompare(msg.Guide,
@@ -231,6 +260,6 @@ func (p *Replica) sendLoop() {
 	}
 }
 
-func calcKeyPos(key uint64, mask uint64, bits uint64) uint64 {
+func CalcKeyPos(key uint64, mask uint64, bits uint64) uint64 {
 	return key & mask >> bits
 }

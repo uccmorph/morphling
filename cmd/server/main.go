@@ -7,15 +7,56 @@ import (
 	"net"
 	"net/http"
 	"net/rpc"
+	"strconv"
 )
 
 var clientPort string
+
+func randomString(length int) []byte {
+	str := make([]byte, length)
+	for i := range str {
+		str[i] = 'a'
+	}
+
+	return str
+}
 
 func main() {
 	flag.StringVar(&clientPort, "cport", "9990", "client connect to this port")
 	flag.Parse()
 
-	rpc.Register(&mpserverv2.RPCEndpoint{})
+	defaultGuidance := &mpserverv2.Guidance{}
+	defaultGuidance.InitDefault(3)
+	storage := mpserverv2.NewMemStorage()
+	storage.Write([]mpserverv2.Modify{
+		{
+			Data: mpserverv2.Put{
+				Key:   []byte(strconv.FormatUint(0x5489, 10)),
+				Value: randomString(20000),
+				Cf:    mpserverv2.CfDefault,
+			},
+		},
+		{
+			Data: mpserverv2.Put{
+				Key:   []byte(strconv.FormatUint(0x6090, 10)),
+				Value: randomString(20000),
+				Cf:    mpserverv2.CfDefault,
+			},
+		},
+		{
+			Data: mpserverv2.Put{
+				Key:   []byte(strconv.FormatUint(0xd290, 10)),
+				Value: randomString(20000),
+				Cf:    mpserverv2.CfDefault,
+			},
+		},
+	})
+	serverEndpoint := &mpserverv2.RPCEndpoint{
+		MsgChan: make(chan *mpserverv2.HandlerInfo),
+		Replica: mpserverv2.CreateReplica(defaultGuidance, storage),
+	}
+	serverEndpoint.Init()
+	rpc.Register(serverEndpoint)
 	rpc.HandleHTTP()
 
 	clientService := ":" + clientPort

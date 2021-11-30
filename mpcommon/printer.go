@@ -62,7 +62,11 @@ func (p *Printer) debugPrintWrapper(debug debugOption, format string, args ...in
 		return
 	}
 	_, line := stackInfo(debug.stackDepth + 1)
-	common := p.CommonPrint()
+	var common string
+	if p.CommonPrint != nil {
+		common = p.CommonPrint()
+	}
+
 	str := fmt.Sprintf("[%s(%5d)| %s] %s", debug.prefix, line, common, format)
 	str = fmt.Sprintf(debug.color, str)
 	p.printer.Printf(str, args...)

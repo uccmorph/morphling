@@ -1,18 +1,13 @@
 package mpserverv2
 
-import "log"
-
-type HandlerInfo struct {
-	Type   msgType
-	Args   *ReplicaMsg
-	Reply  *ReplicaMsg
-	Cargs  *ClientMsg
-	Creply *ClientMsg
-	Res    chan *HandlerInfo
-}
-
 type RPCEndpoint struct {
 	MsgChan chan *HandlerInfo
+	Replica *Replica
+}
+
+func (p *RPCEndpoint) Init() {
+
+	p.Replica.msgCh = p.MsgChan
 }
 
 func (p *RPCEndpoint) ReplicaCall(args *ReplicaMsg, reply *ReplicaMsg) error {
@@ -20,12 +15,13 @@ func (p *RPCEndpoint) ReplicaCall(args *ReplicaMsg, reply *ReplicaMsg) error {
 }
 
 func (p *RPCEndpoint) ClientCall(args *ClientMsg, reply *ClientMsg) error {
-	log.Printf("receive client msg: %+v", args)
+	// log.Printf("receive client msg: %+v", args)
 	res := make(chan *HandlerInfo)
 	p.MsgChan <- &HandlerInfo{
-		Res:    res,
-		Cargs:  args,
-		Creply: reply,
+		IsClient: true,
+		Res:      res,
+		Cargs:    args,
+		Creply:   reply,
 	}
 	info := <-res
 	*reply = *info.Creply
