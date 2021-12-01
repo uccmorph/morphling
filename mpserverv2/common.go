@@ -1,7 +1,8 @@
 package mpserverv2
 
+import "strconv"
+
 type msgType uint64
-type serverID int
 
 const (
 	MsgTypeClient msgType = iota
@@ -16,22 +17,31 @@ const (
 
 type ReplicaMsg struct {
 	Type          msgType
-	From          serverID
+	To            int
+	From          int
 	Success       replyStatus
 	KeyHash       uint64
 	Guide         *Guidance
 	CommitTo      uint64
 	PrevIdx       uint64
 	PrevEpoch     uint64
-	Command       interface{}
+	Command       []byte
 	FastRewindIdx uint64
 }
 
 type ClientMsg struct {
-	Type    msgType
-	Guide   *Guidance
-	KeyHash uint64
-	Data    []byte
+	Type     msgType
+	Guide    *Guidance
+	ClientID int
+	Seq      int
+	KeyHash  uint64
+	Data     []byte
+}
+
+func GenClientTag(id, seq int) string {
+	part1 := strconv.FormatInt(int64(id), 10)
+	part2 := strconv.FormatInt(int64(seq), 10)
+	return part1 + "." + part2
 }
 
 type replyStatus uint64
@@ -75,6 +85,10 @@ func (p *Guidance) ReplicaID(pos uint64) int {
 	return -1
 }
 
+func CalcKeyPos(key uint64, mask uint64, bits uint64) uint64 {
+	return key & mask >> bits
+}
+
 type HandlerInfo struct {
 	IsClient bool
 	Args     *ReplicaMsg
@@ -82,4 +96,18 @@ type HandlerInfo struct {
 	Cargs    *ClientMsg
 	Creply   *ClientMsg
 	Res      chan *HandlerInfo
+}
+
+func min(a, b uint64) uint64 {
+	if a > b {
+		return b
+	}
+	return a
+}
+
+func max(a, b uint64) uint64 {
+	if a > b {
+		return a
+	}
+	return b
 }

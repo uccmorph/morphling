@@ -29,9 +29,9 @@ func main() {
 	flag.IntVar(&keys, "keys", 1, "number of keys")
 	flag.Parse()
 
-	clients := make([]*mpclient.ClientEndPoint, clientNum)
+	clients := make([]*mpclient.MPClient, clientNum)
 	for i := 0; i < clientNum; i++ {
-		client := mpclient.NewClientEntPoint(replicaAddr)
+		client := mpclient.NewMPClient(replicaAddr, i)
 		client.Connet()
 		client.GetGuidance()
 		clients[i] = client
@@ -42,7 +42,7 @@ func main() {
 	wg := sync.WaitGroup{}
 	for i := 0; i < clientNum; i++ {
 		wg.Add(1)
-		go func(client *mpclient.ClientEndPoint) {
+		go func(client *mpclient.MPClient) {
 			defer wg.Done()
 			for op := range requests {
 				// resStr := client.ReadKV(op)

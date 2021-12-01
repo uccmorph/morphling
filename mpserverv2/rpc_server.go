@@ -11,6 +11,16 @@ func (p *RPCEndpoint) Init() {
 }
 
 func (p *RPCEndpoint) ReplicaCall(args *ReplicaMsg, reply *ReplicaMsg) error {
+	res := make(chan *HandlerInfo)
+	p.MsgChan <- &HandlerInfo{
+		IsClient: false,
+		Res:      res,
+		Args:     args,
+		Reply:    reply,
+	}
+
+	info := <-res
+	*reply = *info.Reply
 	return nil
 }
 
@@ -25,6 +35,5 @@ func (p *RPCEndpoint) ClientCall(args *ClientMsg, reply *ClientMsg) error {
 	}
 	info := <-res
 	*reply = *info.Creply
-	close(res)
 	return nil
 }

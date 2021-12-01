@@ -9,22 +9,25 @@ import (
 	"time"
 )
 
-type ClientEndPoint struct {
+type MPClient struct {
 	replicaAddr []string
 	replicas    []*rpc.Client
 	guide       mpserverv2.Guidance
 	quorum      int
+	id          int
+	seq         int
 }
 
-func NewClientEntPoint(rAddr []string) *ClientEndPoint {
-	p := &ClientEndPoint{}
+func NewMPClient(rAddr []string, id int) *MPClient {
+	p := &MPClient{}
 	p.replicaAddr = rAddr
 	p.replicas = make([]*rpc.Client, len(rAddr))
 	p.quorum = len(rAddr)/2 + 1
+	p.id = id
 	return p
 }
 
-func (p *ClientEndPoint) Connet() {
+func (p *MPClient) Connet() {
 	wg := sync.WaitGroup{}
 	for i := range p.replicaAddr {
 		wg.Add(1)
@@ -46,24 +49,7 @@ func (p *ClientEndPoint) Connet() {
 	wg.Wait()
 }
 
-func countQuorum(quorum int, base int, ch chan *mpserverv2.Guidance) bool {
-	count := base
-
-	go func() {
-		for item := range ch {
-			count += 1
-			if item == nil {
-				continue
-			}
-			if count >= quorum {
-
-			}
-		}
-	}()
-	return true
-}
-
-func (p *ClientEndPoint) GetGuidance() {
+func (p *MPClient) GetGuidance() {
 	ch := make(chan *mpserverv2.Guidance)
 	count := 0
 	total := 0
@@ -102,7 +88,7 @@ func (p *ClientEndPoint) GetGuidance() {
 	log.Printf("finish GetGuidance")
 }
 
-func (p *ClientEndPoint) ReadKV(key uint64) (string, error) {
+func (p *MPClient) ReadKV(key uint64) (string, error) {
 
 	args := &mpserverv2.ClientMsg{
 		Type:    mpserverv2.MsgTypeClientRead,
@@ -123,7 +109,7 @@ func (p *ClientEndPoint) ReadKV(key uint64) (string, error) {
 			// log.Printf("ready to call %v", p.replicaAddr[sendTo])
 			err := p.replicas[sendTo].Call("RPCEndpoint.ClientCall", args, reply)
 			if err != nil {
-				log.Printf("call %v GetGuidance error: %v", sendTo, err)
+				log.Printf("call %v MsgTypeClientRead error: %v", sendTo, err)
 				replyCh <- nil
 				return
 			}
@@ -179,4 +165,25 @@ func (p *ClientEndPoint) ReadKV(key uint64) (string, error) {
 	return resultStr, nil
 }
 
-func (p *ClientEndPoint) InsertKV() {}
+func (p *MPClient) WriteKV(key uint64, value string) error {
+	p.seq += 1
+	args := &mpserverv2.ClientMsg{
+		Type:     mpserverv2.MsgTypeClientProposal,
+		Guide:    &p.guide,
+		KeyHash:  key,
+		Data:     []byte(value),
+		ClientID: p.id,
+		Seq:      p.seq,
+	}
+	keyPos := mpserverv2.CalcKeyPos(key, p.guide.GroupMask, p.guide.GroupSize)
+	sendTo := p.guide.ReplicaID(keyPos)
+
+	reply := &mpserverv2.ClientMsg{}
+	err := p.replicas[sendTo].Call("RPCEndpoint.ClientCall", args, reply)
+	if err != nil {
+		log.Printf("call %v MsgTypeClientProposal error: %v", sendTo, err)
+		return err
+	}
+
+	return nil
+}

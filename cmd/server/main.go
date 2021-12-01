@@ -51,12 +51,17 @@ func main() {
 			},
 		},
 	})
+
 	serverEndpoint := &mpserverv2.RPCEndpoint{
 		MsgChan: make(chan *mpserverv2.HandlerInfo),
 		Replica: mpserverv2.CreateReplica(defaultGuidance, storage),
 	}
 	serverEndpoint.Init()
+	clientEndpoint := &mpserverv2.RPCEndpoint{}
+	clientEndpoint.MsgChan = serverEndpoint.MsgChan
+	clientEndpoint.Replica = serverEndpoint.Replica
 	rpc.Register(serverEndpoint)
+	rpc.Register(clientEndpoint)
 	rpc.HandleHTTP()
 
 	clientService := ":" + clientPort
@@ -64,6 +69,12 @@ func main() {
 	if err != nil {
 		log.Fatalf("cannot listen on %v, %v", clientService, err)
 	}
-	http.Serve(l, nil)
+	peerService := ":4567"
+	pl, err := net.Listen("tcp", peerService)
+	if err != nil {
+		log.Fatalf("cannot listen on %v, %v", clientService, err)
+	}
+	go http.Serve(l, nil)
+	http.Serve(pl, nil)
 
 }
