@@ -5,11 +5,6 @@ type RPCEndpoint struct {
 	Replica *Replica
 }
 
-func (p *RPCEndpoint) Init() {
-
-	p.Replica.msgCh = p.MsgChan
-}
-
 func (p *RPCEndpoint) ReplicaCall(args *ReplicaMsg, reply *ReplicaMsg) error {
 	res := make(chan *HandlerInfo)
 	p.MsgChan <- &HandlerInfo{

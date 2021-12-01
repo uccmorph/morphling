@@ -3,6 +3,7 @@ package mpserverv2
 import (
 	"fmt"
 	"morphling/mplogger"
+	"net/rpc"
 	"strconv"
 )
 
@@ -228,20 +229,39 @@ func (l *RaftLog) replaceEntry(entry *Entry) uint64 {
 	return l.appendCmd(entry.Term, entry.Data)
 }
 
+type Config struct {
+	Guide *Guidance
+	Store *MemStorage
+	Peers map[int]*rpc.Client
+	Ch    chan *HandlerInfo
+	Me    int
+}
+
 type Replica struct {
 	localGuidance Guidance
 	log           []RaftLog
 	msgCh         chan *HandlerInfo
 	me            int
-	peers         []int
 	storage       *MemStorage
 	clientPending map[string]*HandlerInfo
+
+	peersStub map[int]*rpc.Client
 }
 
-func CreateReplica(g *Guidance, s *MemStorage) *Replica {
+func CreateReplica(config *Config) *Replica {
 	p := &Replica{}
-	p.localGuidance = *g
-	p.storage = s
+	p.me = config.Me
+	p.localGuidance = *config.Guide
+	p.storage = config.Store
+	p.msgCh = config.Ch
+	p.peersStub = config.Peers
+	p.clientPending = make(map[string]*HandlerInfo)
+
+	p.log = make([]RaftLog, defaultKeySpace)
+	for i := range p.log {
+		p.log[i] = *newLog()
+	}
+
 	go p.mainLoop()
 	return p
 }
@@ -367,6 +387,13 @@ func (p *Replica) commitFromTo(log *groupLogger, start, end uint64) {}
 func (p *Replica) prepareGuidanceTransfer(new *Guidance) {}
 
 func (p *Replica) sendAppendMsg(msg *ReplicaMsg) {
-	for _, peerID := range p.peers {
+	for id, peer := range p.peersStub {
+		if id == p.me {
+			continue
+		}
+		go func(peer *rpc.Client) {
+			reply := &ReplicaMsg{}
+			peer.Call("RPCEndpoint.ReplicaCall", msg, reply)
+		}(peer)
 	}
 }

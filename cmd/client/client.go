@@ -60,7 +60,7 @@ func main() {
 		for i := 0; i < testCount; i++ {
 			switch i % keys {
 			case 0:
-				requests <- 0x5489
+				requests <- 0x5480
 			case 1:
 				requests <- 0x6090
 			case 2:
