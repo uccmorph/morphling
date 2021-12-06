@@ -88,12 +88,35 @@ func (p *MPClient) GetGuidance() {
 	log.Printf("finish GetGuidance")
 }
 
+func (p *MPClient) RaftReadKV(key uint64) (string, error) {
+	p.seq += 1
+	args := &mpserverv2.ClientMsg{
+		Type:     mpserverv2.MsgTypeClientProposal,
+		Guide:    &p.guide,
+		KeyHash:  key,
+		Seq:      p.seq,
+		ClientID: p.id,
+	}
+	// log.Printf("client %v send seq %v", p.id, p.seq)
+	keyPos := mpserverv2.CalcKeyPos(key, p.guide.GroupMask, p.guide.GroupSize)
+	sendTo := p.guide.ReplicaID(keyPos)
+	reply := &mpserverv2.ClientMsg{}
+	err := p.replicas[sendTo].Call("RPCEndpoint.ClientCall", args, reply)
+	if err != nil {
+		log.Printf("call %v MsgTypeClientProposal error: %v", sendTo, err)
+		return "", err
+	}
+	return string(reply.Data), nil
+}
+
 func (p *MPClient) ReadKV(key uint64) (string, error) {
 
 	args := &mpserverv2.ClientMsg{
-		Type:    mpserverv2.MsgTypeClientRead,
-		Guide:   &p.guide,
-		KeyHash: key,
+		Type:     mpserverv2.MsgTypeClientRead,
+		Guide:    &p.guide,
+		KeyHash:  key,
+		Seq:      p.seq,
+		ClientID: p.id,
 	}
 	keyPos := mpserverv2.CalcKeyPos(key, p.guide.GroupMask, p.guide.GroupSize)
 	sendTo := p.guide.ReplicaID(keyPos)

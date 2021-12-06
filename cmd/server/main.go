@@ -18,6 +18,8 @@ var peerPort string = "4567"
 var replicaID int
 
 var replicaAddr []string
+var randS []byte
+var randSLen int = 1000
 
 func init() {
 	replicaAddr = []string{
@@ -25,13 +27,15 @@ func init() {
 		"127.0.0.1:4568",
 		"127.0.0.1:4569",
 	}
+	randS = make([]byte, randSLen)
+	for i := range randS {
+		randS[i] = 'a'
+	}
 }
 
 func randomString(length int) []byte {
 	str := make([]byte, length)
-	for i := range str {
-		str[i] = 'a'
-	}
+	copy(str, randS)
 
 	return str
 }
@@ -60,8 +64,8 @@ func main() {
 		mod := []mpserverv2.Modify{
 			{
 				Data: mpserverv2.Put{
-					Key:   []byte(strconv.FormatUint(0x5489, 10)),
-					Value: randomString(1000),
+					Key:   []byte(strconv.FormatUint(uint64(i), 10)),
+					Value: randomString(randSLen),
 					Cf:    mpserverv2.CfDefault,
 				},
 			},
@@ -104,11 +108,12 @@ func main() {
 	msgCh := make(chan *mpserverv2.HandlerInfo)
 
 	config := mpserverv2.Config{
-		Guide: defaultGuidance,
-		Store: storage,
-		Peers: peersStub,
-		Ch:    msgCh,
-		Me:    replicaID,
+		Guide:    defaultGuidance,
+		Store:    storage,
+		Peers:    peersStub,
+		Ch:       msgCh,
+		Me:       replicaID,
+		RaftLike: true,
 	}
 
 	replica := mpserverv2.CreateReplica(&config)

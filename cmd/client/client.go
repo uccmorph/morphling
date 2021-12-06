@@ -22,12 +22,16 @@ func init() {
 var testCount int
 var clientNum int
 var keys int
+var raftRead bool
 
 func main() {
 	flag.IntVar(&testCount, "count", 100, "test count")
 	flag.IntVar(&clientNum, "cn", 10, "client number")
 	flag.IntVar(&keys, "keys", 1, "number of keys")
+	flag.BoolVar(&raftRead, "rr", false, "use raft like read")
 	flag.Parse()
+
+	log.Printf("raftRead: %v", raftRead)
 
 	clients := make([]*mpclient.MPClient, clientNum)
 	for i := 0; i < clientNum; i++ {
@@ -42,18 +46,23 @@ func main() {
 	wg := sync.WaitGroup{}
 	for i := 0; i < clientNum; i++ {
 		wg.Add(1)
-		go func(client *mpclient.MPClient) {
+		go func(client *mpclient.MPClient, i int) {
 			defer wg.Done()
-			for op := range requests {
-				// resStr := client.ReadKV(op)
-				_, err := client.ReadKV(op)
+			for k := range requests {
+				// log.Printf("client %v 's turn", i)
+				var err error
+				if raftRead {
+					_, err = client.RaftReadKV(k)
+				} else {
+					_, err = client.ReadKV(k)
+				}
 				if err != nil {
 					panic(fmt.Sprintf("read error: %v", err))
 				}
-
-				// log.Printf("res: %v", resStr)
+				// log.Printf("res len: %v", len(v))
+				// log.Printf("res: %v", v)
 			}
-		}(clients[i])
+		}(clients[i], i)
 	}
 
 	go func() {

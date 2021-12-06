@@ -1,6 +1,9 @@
 package mpserverv2
 
-import "strconv"
+import (
+	"strconv"
+	"strings"
+)
 
 type msgType uint64
 
@@ -41,7 +44,16 @@ type ClientMsg struct {
 func GenClientTag(id, seq int) string {
 	part1 := strconv.FormatInt(int64(id), 10)
 	part2 := strconv.FormatInt(int64(seq), 10)
+
 	return part1 + "." + part2
+}
+
+func ParseClientTag(tag string) (int, int) {
+	s := strings.Split(tag, ".")
+	part1, _ := strconv.ParseInt(s[0], 10, 64)
+	part2, _ := strconv.ParseInt(s[1], 10, 64)
+
+	return int(part1), int(part2)
 }
 
 type replyStatus uint64

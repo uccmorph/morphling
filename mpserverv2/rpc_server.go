@@ -7,6 +7,7 @@ type RPCEndpoint struct {
 
 func (p *RPCEndpoint) ReplicaCall(args *ReplicaMsg, reply *ReplicaMsg) error {
 	res := make(chan *HandlerInfo)
+	// log.Printf("ReplicaCall: %+v", args)
 	p.MsgChan <- &HandlerInfo{
 		IsClient: false,
 		Res:      res,
@@ -16,6 +17,7 @@ func (p *RPCEndpoint) ReplicaCall(args *ReplicaMsg, reply *ReplicaMsg) error {
 
 	info := <-res
 	*reply = *info.Reply
+	// log.Printf("reply replica: %+v", reply)
 	return nil
 }
 
