@@ -2,7 +2,6 @@ package mpserverv2
 
 import (
 	"fmt"
-	"log"
 	"morphling/mplogger"
 	"net/rpc"
 	"strconv"
@@ -52,184 +51,6 @@ func (p *Guidance) triDirectionCompareV2(other *Guidance, equal, lhsnewer, lhsol
 	}
 }
 
-type logEntry struct {
-	Epoch uint64
-	Index uint64
-	Cmd   interface{}
-}
-
-// This can be regarded as a sub-replica
-type groupLogger struct {
-	/* if KeyPos == groupLogger.position, then this key's command should be stored here.
-	position is equal to the index of this groupLogger.*/
-	position uint64
-	commitTo uint64
-	glog     []logEntry
-	nextIdx  []uint64
-	matchIdx []uint64
-}
-
-type Entry struct {
-	Term  uint64
-	Index uint64
-	Data  []byte
-}
-
-type RaftLog struct {
-	committed uint64
-
-	applied uint64
-
-	entries []Entry
-
-	logStartAt uint64 // first index in `entries`
-	debuglog   *mplogger.RaftLogger
-}
-
-// newLog returns log using the given storage. It recovers the log
-// to the state that it just commits and applies the latest snapshot.
-func newLog() *RaftLog {
-	// Your Code Here (2A).
-	l := &RaftLog{}
-	l.entries = []Entry{}
-
-	l.logStartAt = 0
-
-	return l
-}
-
-func (l *RaftLog) showInitResult() {
-	l.debuglog.Info("entries: %+v", l.entries)
-}
-
-func positionInLog(raftidx uint64) uint64 {
-	return raftidx - 1
-}
-
-// nextEnts returns all the committed but not applied entries
-func (l *RaftLog) nextEnts() (ents []Entry) {
-	// Your Code Here (2A).
-	if len(l.entries) == 0 {
-		return l.entries
-	}
-
-	return l.entries[positionInLog(l.applied+1):positionInLog(l.committed+1)]
-}
-
-// LastIndex return the last index of the log entries
-func (l *RaftLog) LastIndex() uint64 {
-	// Your Code Here (2A).
-	if len(l.entries) == 0 {
-		return 0
-	}
-	return l.entries[len(l.entries)-1].Index
-}
-
-// Term return the term of the entry in the given index
-// Never return error
-func (l *RaftLog) Term(i uint64) (uint64, error) {
-	// Your Code Here (2A).
-	// if i is verflowed, then some place must be wrong
-	if i == 0 {
-		return 0, nil
-	}
-
-	return l.entries[positionInLog(i)].Term, nil
-}
-
-func (l *RaftLog) lastEntry() Entry {
-	if len(l.entries) == 0 {
-		return Entry{}
-	}
-
-	return l.entries[len(l.entries)-1]
-}
-
-func (l *RaftLog) uncommittedEntries() []*Entry {
-	return l.entriesFrom(l.committed + 1)
-}
-
-func (l *RaftLog) appendCmd(term uint64, cmd []byte) uint64 {
-	e := Entry{
-		Term:  term,
-		Index: l.LastIndex() + 1,
-		Data:  cmd,
-	}
-	l.entries = append(l.entries, e)
-
-	return e.Index
-}
-
-func (l *RaftLog) appendNoop(term uint64) uint64 {
-	e := Entry{
-		Term:  term,
-		Index: l.LastIndex() + 1,
-		Data:  nil,
-	}
-	l.entries = append(l.entries, e)
-
-	return e.Index
-}
-
-// It's safe to call multiple times, since commit index only increment.
-func (l *RaftLog) commitLogTo(idx uint64) bool {
-	nextCommitIdx := min(l.lastEntry().Index, idx)
-	if l.committed < nextCommitIdx {
-		l.debuglog.InfoCommit("commit %v", nextCommitIdx)
-		l.committed = nextCommitIdx
-		return true
-	}
-
-	return false
-}
-
-func (l *RaftLog) commitAt() uint64 {
-	return l.committed
-}
-
-func (l *RaftLog) truncateAndAppendCmd(term, index uint64, cmd []byte) {
-	// if index is 0, then some place must be wrong
-	l.entries = l.entries[:positionInLog(index)]
-	residx := l.appendCmd(term, cmd)
-	if residx != index {
-		panic(fmt.Sprintf("after truncate, old entry and new entry should have same idx. %v -> %v", index, residx))
-	}
-}
-
-func (l *RaftLog) truncateAndAppendEntries(truncateAt uint64, entries []*Entry) {
-	l.entries = l.entries[:positionInLog(truncateAt)]
-	for _, e := range entries {
-		residx := l.appendCmd(e.Term, e.Data)
-		if residx != e.Index {
-			panic(fmt.Sprintf("after truncate, local entry and msg entry should have same idx. %v -> %v", residx, e.Index))
-		}
-	}
-}
-
-func (l *RaftLog) entriesFrom(idx uint64) []*Entry {
-	if idx == 0 {
-		return []*Entry{
-			{},
-		}
-	}
-
-	l.debuglog.Info("retrive entry from: %v, curr max: %v", idx, l.LastIndex())
-	res := make([]*Entry, len(l.entries[positionInLog(idx):]))
-	for i, _ := range l.entries[positionInLog(idx):] {
-		res[i] = &l.entries[positionInLog(idx)+uint64(i)]
-	}
-	return res
-}
-
-func (l *RaftLog) replaceEntry(entry *Entry) uint64 {
-	if entry.Term == 0 {
-		l.entries = make([]Entry, 1)
-		l.entries[0] = *entry
-		return entry.Index
-	}
-	return l.appendCmd(entry.Term, entry.Data)
-}
-
 type Config struct {
 	Guide    *Guidance
 	Store    *MemStorage
@@ -241,14 +62,15 @@ type Config struct {
 
 type Replica struct {
 	localGuidance  Guidance
-	log            []RaftLog
+	raftCore       []*Raft
 	msgCh          chan *HandlerInfo
 	me             int
 	storage        *MemStorage
-	clientPending  map[string]*HandlerInfo
-	clientCmdIndex map[uint64]string
+	clientPending  map[uint64]*HandlerInfo // uuid to client ctx
+	clientCmdIndex map[string]uint64       // entry info to uuid
 
 	peersStub map[int]*rpc.Client
+	debugLog  *mplogger.RaftLogger
 }
 
 func CreateReplica(config *Config) *Replica {
@@ -258,57 +80,101 @@ func CreateReplica(config *Config) *Replica {
 	p.storage = config.Store
 	p.msgCh = config.Ch
 	p.peersStub = config.Peers
-	p.clientPending = make(map[string]*HandlerInfo)
-	p.clientCmdIndex = make(map[uint64]string)
+	p.clientPending = make(map[uint64]*HandlerInfo)
+	p.clientCmdIndex = make(map[string]uint64)
 
-	p.log = make([]RaftLog, defaultKeySpace)
-	for i := range p.log {
-		p.log[i] = *newLog()
+	peers := []int{}
+	for key := range config.Peers {
+		peers = append(peers, key)
 	}
 
-	// if config.RaftLike {
-	// 	go p.mainLoop()
-	// } else {
-	// 	go p.mainLoop()
-	// }
+	p.debugLog = mplogger.NewRaftDebugLogger()
+	p.raftCore = make([]*Raft, defaultKeySpace)
+	for i := range p.raftCore {
+		p.raftCore[i] = newRaft(config.Me, peers, p.debugLog)
+	}
+
 	go p.mainLoop()
 	return p
 }
 
 func (p *Replica) mainLoop() {
 	for {
-		// log.Printf("waiting new msg...")
+		// p.debugLog.Info("waiting new msg...")
+		guide := p.localGuidance
 		select {
 		case msg := <-p.msgCh:
 			if msg.IsClient {
+				// p.debugLog.Info("get client msg: %+v", msg.CMsg)
 				p.HandleClientMsg(msg)
+
 			} else {
-				p.HandleMsg(msg)
+				args := msg.RMsg
+				pos := CalcKeyPos(args.KeyHash, guide.GroupMask, guide.GroupSize)
+				rlog := p.raftCore[pos]
+				p.debugLog.Info("process log group %v", pos)
+				rlog.Step(*args)
+				commitEntries := rlog.RaftLog.nextEnts()
+				p.processCommit(pos, commitEntries)
+				rlog.RaftLog.updateApply(commitEntries)
+				msgs := rlog.readNextMsg()
+				for i := range msgs {
+					msgs[i].KeyHash = args.KeyHash
+				}
+				p.sendReplicaMsgs(msgs)
 			}
 		}
 	}
 }
 
-// func (p *Replica) GetMsgCh() chan *HandlerInfo {
-// 	return p.msgCh
-// }
+func (p *Replica) processCommit(pos uint64, entries []Entry) {
+	for i := range entries {
+		var value []byte
+		if entries[i].Data.Type == CommandTypeWrite {
+			keyStr := strconv.FormatUint(entries[i].Data.Key, 10)
+			p.storage.Set(CfDefault, []byte(keyStr), []byte(entries[i].Data.Value))
+		} else if entries[i].Data.Type == CommandTypeRead {
+			keyStr := strconv.FormatUint(entries[i].Data.Key, 10)
+			value = p.storage.Get(CfDefault, []byte(keyStr))
+		}
+
+		entryTag := GenClientTag(pos, entries[i].Index)
+		uuid := p.clientCmdIndex[entryTag]
+		hinfo := p.clientPending[uuid]
+		reply := &ClientMsg{
+			Type:    MsgTypeClientReply,
+			Guide:   &p.localGuidance,
+			KeyHash: entries[i].Data.Key,
+			Data:    value,
+		}
+		hinfo.CMsg = reply
+		hinfo.Res <- hinfo
+	}
+}
 
 func (p *Replica) HandleClientMsg(msg *HandlerInfo) {
-	args := msg.Cargs
-	reply := msg.Creply
+	args := msg.CMsg
+	reply := ClientMsg{}
 	guide := p.localGuidance
+	replyInfo := &HandlerInfo{
+		IsClient: true,
+		CMsg:     &reply,
+		Res:      msg.Res,
+	}
 	// pos := calcKeyPos(args.KeyHash, guide.GroupMask, guide.GroupSize)
 	switch args.Type {
 	case MsgTypeGetGuidance:
+
 		reply.Guide = &guide
 		reply.Type = args.Type
-		msg.Res <- msg
+
+		replyInfo.Res <- replyInfo
 
 	case MsgTypeClientRead:
-		if guide.Epoch == msg.Cargs.Guide.Epoch {
+		if guide.Epoch == args.Guide.Epoch {
 			keyStr := strconv.FormatUint(args.KeyHash, 10)
 			value := p.storage.Get(CfDefault, []byte(keyStr))
-			// log.Printf("key = %v, value = %v", keyStr, value)
+			// p.debugLog.Printf("key = %v, value = %v", keyStr, value)
 			reply.Data = value
 			reply.KeyHash = args.KeyHash
 			reply.Guide = &guide
@@ -316,130 +182,58 @@ func (p *Replica) HandleClientMsg(msg *HandlerInfo) {
 		} else {
 			reply.Guide = &guide
 		}
-		msg.Res <- msg
-
+		replyInfo.Res <- replyInfo
 	case MsgTypeClientProposal:
-		ok, idx := p.processClientProposal(msg.Cargs, msg.Creply)
-		if ok {
-			// save the context
-			reqTag := GenClientTag(msg.Cargs.ClientID, msg.Cargs.Seq)
-			if _, ok := p.clientPending[reqTag]; ok {
-				panic(fmt.Sprintf("tag %v has already in client context saver", reqTag))
-			}
-			// log.Printf("save idx %v -> tag %v", idx, reqTag)
-			p.clientCmdIndex[idx] = reqTag
-			p.clientPending[reqTag] = msg
-		} else {
-			msg.Creply.Guide = &p.localGuidance
-			msg.Res <- msg
-		}
-		// log.Printf("finish MsgTypeClientProposal")
-	}
-}
-
-// after send Append, should give out control to event loop
-func (p *Replica) processClientProposal(args, reply *ClientMsg) (bool, uint64) {
-	guide := &p.localGuidance
-	if guide.Epoch == args.Guide.Epoch {
-		// log.Printf("processClientProposal valid epoch")
 		pos := CalcKeyPos(args.KeyHash, guide.GroupMask, guide.GroupSize)
-		rlog := &p.log[pos]
-		// log.Printf("log pos: %v", pos)
-		idx := rlog.appendCmd(guide.Epoch, args.Data)
-
-		appendMsg := &ReplicaMsg{
-			Type:      MsgTypeAppend,
-			To:        0,
-			From:      p.me,
-			KeyHash:   args.KeyHash,
-			Guide:     guide,
-			CommitTo:  rlog.committed,
-			PrevIdx:   idx - 1,
-			PrevEpoch: rlog.lastEntry().Term,
-			Command:   args.Data,
+		rlog := p.raftCore[pos]
+		replicaMsg := ReplicaMsg{
+			Type:    MsgTypeClientProposal,
+			KeyHash: args.KeyHash,
+			Entries: []*Entry{
+				{
+					Data: args.Command,
+				},
+			},
 		}
-		p.sendAppendMsg(appendMsg)
-
-		return true, idx
-	}
-	return false, 0
-}
-
-func (p *Replica) HandleMsg(msg *HandlerInfo) {
-
-	switch msg.Args.Type {
-	case MsgTypeAppend:
-		// log.Printf("get MsgTypeAppend: %+v", msg.Args)
-		p.processAppendEntries(msg.Args, msg.Reply)
-		msg.Res <- msg
-		// log.Printf("finish MsgTypeAppend")
-	case MsgTypeAppendReply:
-		if msg.Reply.Success != replyStatusSuccess {
-			// log.Printf("MsgTypeAppendReply failed")
-			return
+		if msg.UUID == 0 {
+			panic("handler info can have 0 uuid")
 		}
-		// log.Printf("MsgTypeAppendReply: +%v", msg.Reply)
-		idx := msg.Reply.PrevIdx
-		clientTag := p.clientCmdIndex[idx]
-		info := p.clientPending[clientTag]
-		keyStr := strconv.FormatUint(info.Cargs.KeyHash, 10)
-		value := p.storage.Get(CfDefault, []byte(keyStr))
-		info.Creply.Data = value
-		info.Creply.KeyHash = info.Cargs.KeyHash
-		info.Creply.Guide = &p.localGuidance
-		info.Creply.Type = info.Cargs.Type
-		// log.Printf("MsgTypeAppendReply with idx %v", idx)
-		select {
-		case info.Res <- info:
-		default:
+		rlog.Step(replicaMsg)
+		entries := rlog.RaftLog.unstableEntries()
+		if len(entries) != 1 {
+			panic(fmt.Sprintf("should have only 1 entry, but now have %v", len(entries)))
 		}
+		p.clientPending[msg.UUID] = msg
+		entryTag := GenClientTag(pos, entries[0].Index)
+		p.clientCmdIndex[entryTag] = msg.UUID
 
-	case MsgTypeGossip:
+		msgs := rlog.readNextMsg()
+		for i := range msgs {
+			msgs[i].KeyHash = args.KeyHash
+		}
+		p.sendReplicaMsgs(msgs)
+
+		rlog.RaftLog.updateStable(entries)
 	}
 }
-
-func (p *Replica) processAppendEntries(args, reply *ReplicaMsg) {
-	guide := &p.localGuidance
-	reply.Type = MsgTypeAppendReply
-	if args.Guide.Epoch != guide.Epoch {
-		reply.Guide = guide
-		reply.Success = replyStatusStaleGuidance
-		return
-	}
-	pos := CalcKeyPos(args.KeyHash, guide.GroupMask, guide.GroupSize)
-	rlog := &p.log[pos]
-
-	// log.Printf("processAppendEntries match")
-	idx := rlog.appendCmd(args.Guide.Epoch, args.Command)
-	reply.Success = replyStatusSuccess
-	reply.PrevIdx = idx
-	reply.To = args.From
-	reply.From = p.me
-}
-
-func (p *Replica) commitFromTo(log *groupLogger, start, end uint64) {}
 
 func (p *Replica) prepareGuidanceTransfer(new *Guidance) {}
 
-func (p *Replica) sendAppendMsg(msg *ReplicaMsg) {
-	for id, peer := range p.peersStub {
-		if id == p.me {
-			continue
-		}
-		// log.Printf("sendAppendMsg to %v", id)
-		msg.To = id
+func (p *Replica) sendReplicaMsgs(msgs []ReplicaMsg) {
+	for i := range msgs {
+		peer := p.peersStub[msgs[i].To]
 		go func(peer *rpc.Client, msg ReplicaMsg) {
 			reply := &ReplicaMsg{}
 			err := peer.Call("RPCEndpoint.ReplicaCall", msg, reply)
 			if err != nil {
-				log.Printf("call RPCEndpoint.ReplicaCall error: %v", err)
+				p.debugLog.Error("call RPCEndpoint.ReplicaCall error: %v", err)
 			}
 			info := &HandlerInfo{
-				Args:  reply,
-				Reply: reply,
+				IsClient: false,
+				RMsg:     reply,
 			}
 			// log.Printf("finish sendAppendMsg, reply: %+v", info.Reply)
 			p.msgCh <- info
-		}(peer, *msg)
+		}(peer, msgs[i])
 	}
 }

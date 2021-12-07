@@ -28,7 +28,7 @@ type ReplicaMsg struct {
 	CommitTo      uint64
 	PrevIdx       uint64
 	PrevEpoch     uint64
-	Command       []byte
+	Entries       []*Entry
 	FastRewindIdx uint64
 }
 
@@ -39,21 +39,34 @@ type ClientMsg struct {
 	Seq      int
 	KeyHash  uint64
 	Data     []byte
+	Command  Command
 }
 
-func GenClientTag(id, seq int) string {
-	part1 := strconv.FormatInt(int64(id), 10)
-	part2 := strconv.FormatInt(int64(seq), 10)
+const (
+	CommandTypeNoop = iota
+	CommandTypeRead
+	CommandTypeWrite
+)
+
+type Command struct {
+	Type  int
+	Key   uint64
+	Value string
+}
+
+func GenClientTag(pos, idx uint64) string {
+	part1 := strconv.FormatUint(pos, 10)
+	part2 := strconv.FormatUint(idx, 10)
 
 	return part1 + "." + part2
 }
 
-func ParseClientTag(tag string) (int, int) {
+func ParseClientTag(tag string) (int, uint64) {
 	s := strings.Split(tag, ".")
 	part1, _ := strconv.ParseInt(s[0], 10, 64)
-	part2, _ := strconv.ParseInt(s[1], 10, 64)
+	part2, _ := strconv.ParseUint(s[1], 10, 64)
 
-	return int(part1), int(part2)
+	return int(part1), part2
 }
 
 type replyStatus uint64
@@ -103,11 +116,10 @@ func CalcKeyPos(key uint64, mask uint64, bits uint64) uint64 {
 
 type HandlerInfo struct {
 	IsClient bool
-	Args     *ReplicaMsg
-	Reply    *ReplicaMsg
-	Cargs    *ClientMsg
-	Creply   *ClientMsg
+	RMsg     *ReplicaMsg
+	CMsg     *ClientMsg
 	Res      chan *HandlerInfo
+	UUID     uint64
 }
 
 func min(a, b uint64) uint64 {

@@ -5,33 +5,31 @@ import (
 	"fmt"
 	"log"
 	"morphling/mpclient"
+	"strings"
 	"sync"
 	"time"
 )
-
-var replicaAddr []string
-
-func init() {
-	replicaAddr = []string{
-		"127.0.0.1:9990",
-		"127.0.0.1:9991",
-		"127.0.0.1:9992",
-	}
-}
 
 var testCount int
 var clientNum int
 var keys int
 var raftRead bool
+var serveraddrs string
+var writeMode bool
 
+// ./client -count 10 -cn 2 -saddr 'localhost:9990;localhost:9991;localhost:9992'
 func main() {
 	flag.IntVar(&testCount, "count", 100, "test count")
 	flag.IntVar(&clientNum, "cn", 10, "client number")
 	flag.IntVar(&keys, "keys", 1, "number of keys")
 	flag.BoolVar(&raftRead, "rr", false, "use raft like read")
+	flag.StringVar(&serveraddrs, "saddr", "", "server addrs, separated by ;")
+	flag.BoolVar(&writeMode, "write", false, "all operation is write")
 	flag.Parse()
 
+	replicaAddr := strings.Split(serveraddrs, ";")
 	log.Printf("raftRead: %v", raftRead)
+	log.Printf("servers: %+v", replicaAddr)
 
 	clients := make([]*mpclient.MPClient, clientNum)
 	for i := 0; i < clientNum; i++ {
@@ -44,6 +42,7 @@ func main() {
 	start := time.Now()
 	requests := make(chan uint64, clientNum)
 	wg := sync.WaitGroup{}
+	value := randomString(1000)
 	for i := 0; i < clientNum; i++ {
 		wg.Add(1)
 		go func(client *mpclient.MPClient, i int) {
@@ -51,13 +50,17 @@ func main() {
 			for k := range requests {
 				// log.Printf("client %v 's turn", i)
 				var err error
-				if raftRead {
-					_, err = client.RaftReadKV(k)
+				if writeMode {
+					err = client.WriteKV(k, string(value))
 				} else {
-					_, err = client.ReadKV(k)
+					if raftRead {
+						_, err = client.RaftReadKV(k)
+					} else {
+						_, err = client.ReadKV(k)
+					}
 				}
 				if err != nil {
-					panic(fmt.Sprintf("read error: %v", err))
+					panic(fmt.Sprintf("operation error: %v", err))
 				}
 				// log.Printf("res len: %v", len(v))
 				// log.Printf("res: %v", v)
@@ -85,4 +88,12 @@ func main() {
 	log.Printf("total %v s, ops: %v", dur.Seconds(), float64(testCount)/dur.Seconds())
 
 	time.Sleep(time.Second * 3)
+}
+
+func randomString(length int) []byte {
+	randS := make([]byte, length)
+	for i := range randS {
+		randS[i] = 'a'
+	}
+	return randS
 }

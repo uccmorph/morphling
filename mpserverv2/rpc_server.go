@@ -1,8 +1,14 @@
 package mpserverv2
 
+import (
+	"sync/atomic"
+)
+
 type RPCEndpoint struct {
 	MsgChan chan *HandlerInfo
 	Replica *Replica
+
+	uuid uint64
 }
 
 func (p *RPCEndpoint) ReplicaCall(args *ReplicaMsg, reply *ReplicaMsg) error {
@@ -11,26 +17,27 @@ func (p *RPCEndpoint) ReplicaCall(args *ReplicaMsg, reply *ReplicaMsg) error {
 	p.MsgChan <- &HandlerInfo{
 		IsClient: false,
 		Res:      res,
-		Args:     args,
-		Reply:    reply,
+		RMsg:     args,
 	}
 
 	info := <-res
-	*reply = *info.Reply
+	*reply = *info.RMsg
 	// log.Printf("reply replica: %+v", reply)
 	return nil
 }
 
 func (p *RPCEndpoint) ClientCall(args *ClientMsg, reply *ClientMsg) error {
 	// log.Printf("receive client msg: %+v", args)
+	uuid := atomic.AddUint64(&p.uuid, 1)
 	res := make(chan *HandlerInfo)
 	p.MsgChan <- &HandlerInfo{
 		IsClient: true,
 		Res:      res,
-		Cargs:    args,
-		Creply:   reply,
+		CMsg:     args,
+		UUID:     uuid,
 	}
 	info := <-res
-	*reply = *info.Creply
+	// log.Printf("get reply: %+v", info.CMsg)
+	*reply = *info.CMsg
 	return nil
 }
