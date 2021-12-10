@@ -15,6 +15,9 @@ type MPClient struct {
 	quorum      int
 	id          int
 	seq         int
+
+	chs      []chan *mpserverv2.ClientMsg
+	replyChs []chan *mpserverv2.ClientMsg
 }
 
 func NewMPClient(rAddr []string, id int) *MPClient {
@@ -23,7 +26,22 @@ func NewMPClient(rAddr []string, id int) *MPClient {
 	p.replicas = make([]*rpc.Client, len(rAddr))
 	p.quorum = len(rAddr)/2 + 1
 	p.id = id
+
+	p.chs = make([]chan *mpserverv2.ClientMsg, 3)
+	for i := range p.chs {
+		p.chs[i] = make(chan *mpserverv2.ClientMsg)
+	}
+	p.replyChs = make([]chan *mpserverv2.ClientMsg, 3)
+	for i := range p.replyChs {
+		p.replyChs[i] = make(chan *mpserverv2.ClientMsg)
+	}
 	return p
+}
+
+func (p *MPClient) Disconnect() {
+	for i := range p.replicas {
+		p.replicas[i].Close()
+	}
 }
 
 func (p *MPClient) Connet() {
@@ -40,7 +58,7 @@ func (p *MPClient) Connet() {
 					continue
 				}
 				p.replicas[i] = client
-				log.Printf("replica %v connected", p.replicaAddr[i])
+				// log.Printf("replica %v connected", p.replicaAddr[i])
 				return
 			}
 		}(i)
@@ -60,7 +78,7 @@ func (p *MPClient) GetGuidance() {
 				Type: mpserverv2.MsgTypeGetGuidance,
 			}
 			reply := &mpserverv2.ClientMsg{}
-			log.Printf("ready to call %v", p.replicaAddr[i])
+			// log.Printf("ready to call %v", p.replicaAddr[i])
 			err := p.replicas[i].Call("RPCEndpoint.ClientCall", args, reply)
 			if err != nil {
 				log.Printf("call %v GetGuidance error: %v", i, err)
@@ -81,10 +99,52 @@ func (p *MPClient) GetGuidance() {
 		if count == total {
 			p.guide = *guide
 			close(ch)
-			log.Printf("close ch")
+			// log.Printf("close ch")
 		}
 	}
-	log.Printf("finish GetGuidance")
+	// log.Printf("finish GetGuidance")
+
+	p.RunReplicaLoop()
+}
+
+func (p *MPClient) RunReplicaLoop() {
+	for i := range p.chs {
+		go func(i int) {
+			for cmsg := range p.chs[i] {
+				reply := &mpserverv2.ClientMsg{}
+				// log.Printf("ready to call %v", p.replicaAddr[i])
+				err := p.replicas[i].Call("RPCEndpoint.ClientCall", cmsg, reply)
+				if err != nil {
+					log.Printf("call %v msg type %v error: %v", i, cmsg.Type, err)
+					continue
+				}
+				p.replyChs[i] <- reply
+			}
+		}(i)
+	}
+}
+
+func (p *MPClient) UnreplicateReadKV(key uint64) (string, error) {
+	args := &mpserverv2.ClientMsg{
+		Type:     mpserverv2.MsgTypeClientRead,
+		Guide:    &p.guide,
+		KeyHash:  key,
+		Seq:      p.seq,
+		ClientID: p.id,
+		Command: mpserverv2.Command{
+			Type: mpserverv2.CommandTypeRead,
+		},
+	}
+	keyPos := mpserverv2.CalcKeyPos(key, p.guide.GroupMask, p.guide.GroupSize)
+	sendTo := p.guide.ReplicaID(keyPos)
+	reply := &mpserverv2.ClientMsg{}
+	// log.Printf("ready to call %v", p.replicaAddr[sendTo])
+	err := p.replicas[sendTo].Call("RPCEndpoint.ClientCall", args, reply)
+	if err != nil {
+		log.Printf("call %v MsgTypeClientRead error: %v", sendTo, err)
+		return "", err
+	}
+	return string(reply.Data), nil
 }
 
 func (p *MPClient) RaftReadKV(key uint64) (string, error) {
@@ -110,6 +170,49 @@ func (p *MPClient) RaftReadKV(key uint64) (string, error) {
 		return "", err
 	}
 	return string(reply.Data), nil
+}
+
+func (p *MPClient) ReadKVFast(key uint64) (string, error) {
+	readArgs := &mpserverv2.ClientMsg{
+		Type:     mpserverv2.MsgTypeClientRead,
+		Guide:    &p.guide,
+		KeyHash:  key,
+		Seq:      p.seq,
+		ClientID: p.id,
+		Command: mpserverv2.Command{
+			Type: mpserverv2.CommandTypeRead,
+		},
+	}
+	gdArgs := &mpserverv2.ClientMsg{
+		Type: mpserverv2.MsgTypeGetGuidance,
+	}
+
+	keyPos := mpserverv2.CalcKeyPos(key, p.guide.GroupMask, p.guide.GroupSize)
+	sendTo := p.guide.ReplicaID(keyPos)
+	for i := range p.chs {
+		if i == sendTo {
+			p.chs[i] <- readArgs
+		} else {
+			p.chs[i] <- gdArgs
+		}
+	}
+	var res string
+
+	gdchs := make([]chan *mpserverv2.ClientMsg, 0)
+	for i := range p.replyChs {
+		if i == sendTo {
+			continue
+		}
+		gdchs = append(gdchs, p.replyChs[i])
+	}
+	select {
+	case re := <-p.replyChs[sendTo]:
+		res = string(re.Data)
+	}
+	for i := range gdchs {
+		<-gdchs[i]
+	}
+	return res, nil
 }
 
 func (p *MPClient) ReadKV(key uint64) (string, error) {

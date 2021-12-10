@@ -9,6 +9,7 @@ import (
 	"net/rpc"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -16,17 +17,12 @@ import (
 var clientPort string = "9990"
 var peerPort string = "4567"
 var replicaID int
+var serveraddrs string
 
-var replicaAddr []string
 var randS []byte
 var randSLen int = 1000
 
 func init() {
-	replicaAddr = []string{
-		"127.0.0.1:4567",
-		"127.0.0.1:4568",
-		"127.0.0.1:4569",
-	}
 	randS = make([]byte, randSLen)
 	for i := range randS {
 		randS[i] = 'a'
@@ -42,9 +38,10 @@ func randomString(length int) []byte {
 
 func main() {
 	flag.IntVar(&replicaID, "id", -1, "replica unique id")
+	flag.StringVar(&serveraddrs, "saddr", "", "server addrs, separated by ;")
 	flag.Parse()
 
-	if replicaID == -1 {
+	if replicaID == -1 || len(serveraddrs) == 0 {
 		flag.Usage()
 		os.Exit(1)
 	}
@@ -54,7 +51,9 @@ func main() {
 	p, _ = strconv.ParseInt(peerPort, 10, 64)
 	p += int64(replicaID)
 	peerPort = strconv.FormatInt(p, 10)
+	replicaAddr := strings.Split(serveraddrs, ";")
 	log.Printf("clientPort: %v, peerPort: %v", clientPort, peerPort)
+	log.Printf("all server: %+v", replicaAddr)
 
 	defaultGuidance := &mpserverv2.Guidance{}
 	defaultGuidance.InitDefault(3)

@@ -5,8 +5,11 @@ import (
 	"fmt"
 	"log"
 	"morphling/mpclient"
+	"os"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -16,6 +19,7 @@ var keys int
 var raftRead bool
 var serveraddrs string
 var writeMode bool
+var unreplicateRead bool
 
 // ./client -count 10 -cn 2 -saddr 'localhost:9990;localhost:9991;localhost:9992'
 func main() {
@@ -25,6 +29,7 @@ func main() {
 	flag.BoolVar(&raftRead, "rr", false, "use raft like read")
 	flag.StringVar(&serveraddrs, "saddr", "", "server addrs, separated by ;")
 	flag.BoolVar(&writeMode, "write", false, "all operation is write")
+	flag.BoolVar(&unreplicateRead, "ur", false, "unreplicate read, only one server")
 	flag.Parse()
 
 	replicaAddr := strings.Split(serveraddrs, ";")
@@ -38,6 +43,8 @@ func main() {
 		client.GetGuidance()
 		clients[i] = client
 	}
+	handleSignal(clients)
+	log.Printf("%v clients connection complete, will send %v total request", clientNum, testCount)
 
 	start := time.Now()
 	requests := make(chan uint64, clientNum)
@@ -55,8 +62,10 @@ func main() {
 				} else {
 					if raftRead {
 						_, err = client.RaftReadKV(k)
+					} else if unreplicateRead {
+						_, err = client.UnreplicateReadKV(k)
 					} else {
-						_, err = client.ReadKV(k)
+						_, err = client.ReadKVFast(k)
 					}
 				}
 				if err != nil {
@@ -87,7 +96,7 @@ func main() {
 	dur := time.Since(start)
 	log.Printf("total %v s, ops: %v", dur.Seconds(), float64(testCount)/dur.Seconds())
 
-	time.Sleep(time.Second * 3)
+	time.Sleep(time.Second * 1)
 }
 
 func randomString(length int) []byte {
@@ -96,4 +105,19 @@ func randomString(length int) []byte {
 		randS[i] = 'a'
 	}
 	return randS
+}
+
+func handleSignal(clients []*mpclient.MPClient) {
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh,
+		syscall.SIGHUP,
+		syscall.SIGINT,
+		syscall.SIGTERM,
+		syscall.SIGQUIT)
+	go func() {
+		<-sigCh
+		for i := range clients {
+			clients[i].Disconnect()
+		}
+	}()
 }

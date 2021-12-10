@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"fmt"
 
-	"github.com/Connor1996/badger/y"
+	"github.com/dgraph-io/badger/y"
 	"github.com/petar/GoLLRB/llrb"
 )
 
