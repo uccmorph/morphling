@@ -1,4 +1,7 @@
 
+#ifndef __CORE_SMR_H__
+#define __CORE_SMR_H__
+
 #include <cstdint>
 #include <vector>
 
@@ -41,16 +44,33 @@ struct AppenEntriesReplyMessage {
   uint64_t index;
 };
 
+struct ClientProposalMessage {
+  guidance_t guidance;
+  uint64_t key_hash;
+  void *data;
+  size_t data_size;
+};
+
+const int DEFAULT_KEY_SPACE = 256;
+
 class MPReplica {
   SMRLog m_log;
-  guidance_t *m_guide;
+  guidance_t m_guide;
   int m_me;
+  std::vector<int> m_peers;
 
- public:
-  MPReplica();
-  ~MPReplica();
+private:
+  void init_local_guidance(int kay_space = DEFAULT_KEY_SPACE);
 
-  void handle_append_entries();
-  void handle_append_entries_reply();
-  void handle_operation();
+public:
+  MPReplica(int id, std::vector<int> &peers): m_log(SMRLog(256)), m_me(id), m_peers(peers) {
+    init_local_guidance();
+  }
+  ~MPReplica(){}
+
+  void handle_append_entries(AppendEntriesMessage &msg);
+  void handle_append_entries_reply(AppenEntriesReplyMessage &msg);
+  void handle_operation(ClientProposalMessage &msg);
 };
+
+#endif //__CORE_SMR_H__

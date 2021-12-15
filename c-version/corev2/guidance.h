@@ -1,5 +1,8 @@
 #include <stdint.h>
 
+
+#ifndef __CORE_GUIDANCE_H__
+#define __CORE_GUIDANCE_H__
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -24,3 +27,5 @@ typedef struct __attribute__((__packed__)) {
 #ifdef __cplusplus
 }
 #endif
+
+#endif //__CORE_GUIDANCE_H__
