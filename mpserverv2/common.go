@@ -35,6 +35,7 @@ type ReplicaMsg struct {
 type ClientMsg struct {
 	Type     msgType
 	Guide    *Guidance
+	Success  replyStatus
 	ClientID int
 	Seq      int
 	KeyHash  uint64
@@ -72,16 +73,41 @@ func ParseClientTag(tag string) (int, uint64) {
 type replyStatus uint64
 
 const (
-	replyStatusSuccess replyStatus = iota
+	ReplyStatusSuccess replyStatus = iota
 	replyStatusStaleGuidance
 	replyStatusMissingEntries
 	replyStatusMismatchEntry
+	replyStatusTimeout
+	ReplyStatusNoValue
 )
+
+type ReplicaStatus struct {
+	Alive       bool
+	StartKeyPos uint64
+	EndKeyPos   uint64
+}
+
+func (p *ReplicaStatus) KeyisIn(pos uint64) bool {
+	if !p.Alive {
+		return false
+	}
+	if p.StartKeyPos > p.EndKeyPos {
+		if p.StartKeyPos <= pos && pos < defaultKeySpace {
+			return true
+		} else if 0 <= pos && pos < p.EndKeyPos {
+			return true
+		}
+	} else {
+		if p.StartKeyPos <= pos && pos < p.EndKeyPos {
+			return true
+		}
+	}
+	return false
+}
 
 type Guidance struct {
 	Epoch     uint64
-	AliveNum  uint64
-	GroupMask uint64 // KeyPos = KeyHash & GroupMask >> GroupSize. Like, 0x5498 & 0xff00 >> 8 = 0x54, then this key is in slot 84
+	GroupMask uint64 // KeyPos = KeyHash & GroupMask >> GroupSize. Like, 0x5498 & 0xff00 >> 8 = 0x54, then this key is in part 0x54
 	GroupSize uint64 // The number of  1 digits in KeyMask, however it can be deduced from GroupMask
 	Cluster   []ReplicaStatus
 }
@@ -90,14 +116,13 @@ var defaultKeySpace uint64 = 256
 
 func (p *Guidance) InitDefault(size uint64) {
 	p.Epoch = 1
-	p.AliveNum = size
-	p.GroupMask = 0xff00
-	p.GroupSize = 8
-	p.Cluster = make([]ReplicaStatus, p.AliveNum)
+	p.GroupMask = 0xff000000
+	p.GroupSize = 24
+	p.Cluster = make([]ReplicaStatus, size)
 	for i := range p.Cluster {
 		p.Cluster[i].Alive = true
-		p.Cluster[i].StartKeyPos = uint64(i) * defaultKeySpace / p.AliveNum
-		p.Cluster[i].EndKeyPos = uint64(i+1) * defaultKeySpace / p.AliveNum
+		p.Cluster[i].StartKeyPos = uint64(i) * defaultKeySpace / size
+		p.Cluster[i].EndKeyPos = uint64(i+1) * defaultKeySpace / size
 	}
 }
 
@@ -135,3 +160,28 @@ func max(a, b uint64) uint64 {
 	}
 	return b
 }
+
+// stat-server
+type StatisticsArgs struct {
+	AvgLatencyNs   int
+	ThroughputKops float64
+	VClientNums    int
+	MachineID      int
+}
+
+type StatisticsReply struct{}
+
+type ClientRegisterArgs struct{}
+
+type ClientRegisterReply struct {
+	MachineID int
+}
+
+// sent from stat-server to clients
+type StartTestArgs struct {
+	TestCount  int
+	ClientNums int
+	Finish     bool
+}
+
+type StartTestReply struct{}

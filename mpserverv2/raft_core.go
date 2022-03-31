@@ -195,7 +195,7 @@ func (r *Raft) Step(m ReplicaMsg) error {
 func (r Raft) leaderStepAppendResp(m ReplicaMsg) []ReplicaMsg {
 	r.debuglog.Info("Prs of server %v: %+v", m.From, r.Prs[m.From])
 	r.debuglog.DebugVote("server %v vote [%v] for entry %v", m.From, m.Success, m.PrevIdx)
-	if m.Success == replyStatusSuccess && m.PrevIdx > r.RaftLog.commitAt() {
+	if m.Success == ReplyStatusSuccess && m.PrevIdx > r.RaftLog.commitAt() {
 		// if index.Term != r.Term, then index.entry is not belong to current leader.
 		indexTerm, _ := r.RaftLog.Term(m.PrevIdx)
 		if indexTerm == r.Term {
@@ -210,7 +210,7 @@ func (r Raft) leaderStepAppendResp(m ReplicaMsg) []ReplicaMsg {
 	// many same heartbeat will be generated, causing a congestion
 	// This situation may happen in any AppendEntries RPC.
 	// Let's control that within a single tick, only 2~5 same AppendEntries RPC can be sent.
-	if m.Success != replyStatusSuccess {
+	if m.Success != ReplyStatusSuccess {
 		if m.PrevIdx <= r.Prs[m.From].Next {
 			r.Prs[m.From].Next = m.PrevIdx - 1
 		}
@@ -281,7 +281,7 @@ func (r *Raft) handleAppendEntries(m ReplicaMsg) {
 		Type:    MsgTypeAppendReply,
 		To:      m.From,
 		From:    r.id,
-		Success: replyStatusSuccess,
+		Success: ReplyStatusSuccess,
 		PrevIdx: m.Entries[0].Index,
 	}
 
@@ -309,7 +309,7 @@ func (r *Raft) handleAppendEntries(m ReplicaMsg) {
 	// }
 	// r.debuglog.Info("last index: %v, msg commit: %v", r.RaftLog.LastIndex(), m.CommitTo)
 	// // Should commit and apply in some place
-	// if reply.Success == replyStatusSuccess && m.CommitTo > r.RaftLog.commitAt() {
+	// if reply.Success == ReplyStatusSuccess && m.CommitTo > r.RaftLog.commitAt() {
 	// 	idx := min(reply.PrevIdx, m.CommitTo)
 	// 	r.RaftLog.commitLogTo(idx)
 	// }

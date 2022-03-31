@@ -15,7 +15,7 @@ import (
 )
 
 var clientPort string = "9990"
-var peerPort string = "4567"
+var guidancePort string = "9996"
 var replicaID int
 var serveraddrs string
 
@@ -39,27 +39,25 @@ func randomString(length int) []byte {
 func main() {
 	flag.IntVar(&replicaID, "id", -1, "replica unique id")
 	flag.StringVar(&serveraddrs, "saddr", "", "server addrs, separated by ;")
+	flag.StringVar(&clientPort, "cport", "9990", "client port for operational requests")
 	flag.Parse()
 
 	if replicaID == -1 || len(serveraddrs) == 0 {
 		flag.Usage()
 		os.Exit(1)
 	}
-	p, _ := strconv.ParseInt(clientPort, 10, 64)
-	p += int64(replicaID)
-	clientPort = strconv.FormatInt(p, 10)
-	p, _ = strconv.ParseInt(peerPort, 10, 64)
-	p += int64(replicaID)
-	peerPort = strconv.FormatInt(p, 10)
-	replicaAddr := strings.Split(serveraddrs, ";")
-	log.Printf("clientPort: %v, peerPort: %v", clientPort, peerPort)
+
+	replicaAddr := strings.Split(serveraddrs, ",")
+	log.Printf("clientPort: %v, guidancePort: %v", clientPort, guidancePort)
 	log.Printf("all server: %+v", replicaAddr)
 
 	defaultGuidance := &mpserverv2.Guidance{}
 	defaultGuidance.InitDefault(3)
-	storage := mpserverv2.NewMemStorage()
 
-	for i := 0; i < 0xffff; i += 8 {
+	// init storage, mask 0xfffff000
+	storage := mpserverv2.NewMemStorage()
+	kvCount := 0
+	for i := 0; i < 0xffffffff; i += 0x1000 {
 		mod := []mpserverv2.Modify{
 			{
 				Data: mpserverv2.Put{
@@ -70,58 +68,53 @@ func main() {
 			},
 		}
 		storage.Write(mod)
+		kvCount += 1
 	}
+	log.Printf("total %d kv pairs", kvCount)
 
 	serverEndpoint := &mpserverv2.RPCEndpoint{}
 	clientEndpoint := &mpserverv2.RPCEndpoint{}
+	guidanceEndpoint := &mpserverv2.GuidanceEndpoint{}
 	rpc.Register(serverEndpoint)
 	rpc.Register(clientEndpoint)
+	rpc.Register(guidanceEndpoint)
 	rpc.HandleHTTP()
 
-	go func() {
-		clientService := ":" + clientPort
-		l, err := net.Listen("tcp", clientService)
+	startSrv := func(addr string, title string) {
+		l, err := net.Listen("tcp", addr)
 		if err != nil {
-			log.Fatalf("cannot listen on %v, %v", clientService, err)
+			log.Fatalf("cannot listen on %v, %v", addr, err)
 		}
+		log.Printf("start %s service at: %s", title, addr)
 		err = http.Serve(l, nil)
 		if err != nil {
 			log.Printf("start http failed: %v", err)
 		}
-	}()
-
-	go func() {
-		peerService := ":" + peerPort
-		pl, err := net.Listen("tcp", peerService)
-		if err != nil {
-			log.Fatalf("cannot listen on %v, %v", peerService, err)
-		}
-		err = http.Serve(pl, nil)
-		if err != nil {
-			log.Printf("start http failed: %v", err)
-		}
-	}()
+	}
+	go startSrv(":"+clientPort, "client op")
+	go startSrv(":"+guidancePort, "guidance")
+	go startSrv(replicaAddr[replicaID], "peer")
 
 	peersStub := ConnectPeers(replicaAddr, replicaID)
 
 	msgCh := make(chan *mpserverv2.HandlerInfo)
+	guidanceCh := make(chan *mpserverv2.HandlerInfo)
 
 	config := mpserverv2.Config{
-		Guide:    defaultGuidance,
-		Store:    storage,
-		Peers:    peersStub,
-		Ch:       msgCh,
-		Me:       replicaID,
-		RaftLike: true,
+		Guide:      defaultGuidance,
+		Store:      storage,
+		Peers:      peersStub,
+		Ch:         msgCh,
+		GuidanceCh: guidanceCh,
+		Me:         replicaID,
+		RaftLike:   true,
 	}
 
-	replica := mpserverv2.CreateReplica(&config)
+	mpserverv2.CreateReplica(&config)
 
 	serverEndpoint.MsgChan = msgCh
-	serverEndpoint.Replica = replica
-
-	clientEndpoint.MsgChan = serverEndpoint.MsgChan
-	clientEndpoint.Replica = serverEndpoint.Replica
+	clientEndpoint.MsgChan = msgCh
+	guidanceEndpoint.MsgChan = guidanceCh
 
 	select {}
 }

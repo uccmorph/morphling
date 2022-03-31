@@ -2,68 +2,27 @@ package mpserverv2
 
 import (
 	"fmt"
+	"log"
 	"morphling/mplogger"
 	"net/rpc"
 	"strconv"
 )
 
-type ReplicaStatus struct {
-	Alive       bool
-	StartKeyPos uint64
-	EndKeyPos   uint64
-}
-
-func (p *ReplicaStatus) KeyisIn(pos uint64) bool {
-	if !p.Alive {
-		return false
-	}
-	if p.StartKeyPos > p.EndKeyPos {
-		if p.StartKeyPos <= pos && pos < defaultKeySpace {
-			return true
-		} else if 0 <= pos && pos < p.EndKeyPos {
-			return true
-		}
-	} else {
-		if p.StartKeyPos <= pos && pos < p.EndKeyPos {
-			return true
-		}
-	}
-	return false
-}
-
-func (p *Guidance) triDirectionCompare(other *Guidance, equal, lhsnewer, lhsolder func()) {
-	if p.Epoch == other.Epoch && equal != nil {
-		equal()
-	} else if p.Epoch < other.Epoch && lhsolder != nil {
-		lhsolder()
-	} else if p.Epoch > other.Epoch && lhsnewer != nil {
-		lhsnewer()
-	}
-}
-
-func (p *Guidance) triDirectionCompareV2(other *Guidance, equal, lhsnewer, lhsolder func(lhs, rhs *Guidance)) {
-	if p.Epoch == other.Epoch && equal != nil {
-		equal(p, other)
-	} else if p.Epoch < other.Epoch && lhsolder != nil {
-		lhsolder(p, other)
-	} else if p.Epoch > other.Epoch && lhsnewer != nil {
-		lhsnewer(p, other)
-	}
-}
-
 type Config struct {
-	Guide    *Guidance
-	Store    *MemStorage
-	Peers    map[int]*rpc.Client
-	Ch       chan *HandlerInfo
-	Me       int
-	RaftLike bool
+	Guide      *Guidance
+	Store      *MemStorage
+	Peers      map[int]*rpc.Client
+	Ch         chan *HandlerInfo
+	GuidanceCh chan *HandlerInfo
+	Me         int
+	RaftLike   bool
 }
 
 type Replica struct {
 	localGuidance  Guidance
 	raftCore       []*Raft
 	msgCh          chan *HandlerInfo
+	gCh            chan *HandlerInfo
 	me             int
 	storage        *MemStorage
 	clientPending  map[uint64]*HandlerInfo // uuid to client ctx
@@ -79,6 +38,7 @@ func CreateReplica(config *Config) *Replica {
 	p.localGuidance = *config.Guide
 	p.storage = config.Store
 	p.msgCh = config.Ch
+	p.gCh = config.GuidanceCh
 	p.peersStub = config.Peers
 	p.clientPending = make(map[uint64]*HandlerInfo)
 	p.clientCmdIndex = make(map[string]uint64)
@@ -95,6 +55,7 @@ func CreateReplica(config *Config) *Replica {
 	}
 
 	go p.mainLoop()
+	go p.guidanceLoop()
 	return p
 }
 
@@ -104,6 +65,7 @@ func (p *Replica) mainLoop() {
 		guide := p.localGuidance
 		select {
 		case msg := <-p.msgCh:
+			// time.Sleep(time.Millisecond * 1)
 			if msg.IsClient {
 				// p.debugLog.Info("get client msg: %+v", msg.CMsg)
 				p.HandleClientMsg(msg)
@@ -127,26 +89,46 @@ func (p *Replica) mainLoop() {
 	}
 }
 
+func (p *Replica) guidanceLoop() {
+	for {
+		select {
+		case msg := <-p.gCh:
+			if !msg.IsClient {
+				log.Fatalf("msg is not from client. %+v", msg)
+			}
+			if msg.CMsg.Type != MsgTypeGetGuidance {
+				log.Fatalf("msg type is not MsgTypeGetGuidance. %v", msg.CMsg.Type)
+			}
+			// log.Printf("msg %+v", msg.CMsg)
+			p.HandleClientMsg(msg)
+		}
+	}
+}
+
 func (p *Replica) processCommit(pos uint64, entries []Entry) {
 	for i := range entries {
 		var value []byte
+		reply := &ClientMsg{
+			Type:    MsgTypeClientReply,
+			Guide:   &p.localGuidance,
+			KeyHash: entries[i].Data.Key,
+		}
 		if entries[i].Data.Type == CommandTypeWrite {
 			keyStr := strconv.FormatUint(entries[i].Data.Key, 10)
 			p.storage.Set(CfDefault, []byte(keyStr), []byte(entries[i].Data.Value))
 		} else if entries[i].Data.Type == CommandTypeRead {
 			keyStr := strconv.FormatUint(entries[i].Data.Key, 10)
 			value = p.storage.Get(CfDefault, []byte(keyStr))
+			if len(value) == 0 {
+				reply.Success = ReplyStatusNoValue
+			}
 		}
+		reply.Data = value
 
 		entryTag := GenClientTag(pos, entries[i].Index)
 		uuid := p.clientCmdIndex[entryTag]
 		hinfo := p.clientPending[uuid]
-		reply := &ClientMsg{
-			Type:    MsgTypeClientReply,
-			Guide:   &p.localGuidance,
-			KeyHash: entries[i].Data.Key,
-			Data:    value,
-		}
+		reply.Seq = hinfo.CMsg.Seq
 		hinfo.CMsg = reply
 		hinfo.Res <- hinfo
 	}
@@ -167,6 +149,7 @@ func (p *Replica) HandleClientMsg(msg *HandlerInfo) {
 
 		reply.Guide = &guide
 		reply.Type = args.Type
+		reply.Seq = args.Seq
 
 		replyInfo.Res <- replyInfo
 
