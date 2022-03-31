@@ -18,9 +18,10 @@ func main() {
 	}
 
 	disconnT := time.NewTimer(time.Second * 5)
-
 	connT := time.NewTimer(time.Second * 15)
-	for {
+	finishT := time.NewTimer(time.Second * 20)
+	finish := false
+	for !finish {
 		select {
 		case <-disconnT.C:
 			nc.SetDisconn(2, 1)
@@ -29,6 +30,9 @@ func main() {
 		case <-connT.C:
 			nc.SetConn(2, 1)
 			nc.SetConn(2, 0)
+
+		case <-finishT.C:
+			finish = true
 		}
 	}
 }

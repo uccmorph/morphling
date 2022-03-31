@@ -101,6 +101,40 @@ func (p *Guidance) calcRange(id int) int {
 	return calcRange(p.cluster[id].start, p.cluster[id].end)
 }
 
+func posInRange(pos int, start, end int) bool {
+	// end is over 255
+	if start > end {
+		if start <= pos && pos <= 255 {
+			return true
+		}
+		if 0 <= pos && pos <= end {
+			return true
+		}
+	} else {
+		if start <= pos && pos <= end {
+			return true
+		}
+	}
+	return false
+}
+
+// return: 1 for p is subset of target, 0 for same, -1 for other case
+func (p *Guidance) compareRange(target *Guidance, id int) int {
+	if p.cluster[id].start == target.cluster[id].start &&
+		p.cluster[id].end == target.cluster[id].end {
+		return 0
+	}
+
+	if p.calcRange(id) < target.calcRange(id) {
+		if posInRange(p.cluster[id].start, target.cluster[id].start, target.cluster[id].end) &&
+			posInRange(p.cluster[id].end, target.cluster[id].start, target.cluster[id].end) {
+			return 1
+		}
+	}
+
+	return -1
+}
+
 func (p *Guidance) SetAlive(id int) {
 	p.cluster[id].alive = true
 
@@ -120,6 +154,11 @@ func (p *Guidance) SetAlive(id int) {
 	p.cluster[id].end = (p.cluster[nextIdx].start - 1 + 256) % 256
 }
 
+type State int
+
+const Shifting State = 0
+const Serving State = 1
+
 type Server struct {
 	mu        sync.Mutex
 	debug     *Logger
@@ -127,11 +166,13 @@ type Server struct {
 	id        int
 	deadCount map[int]int
 	guide     Guidance
+	prevGuide *Guidance
 
 	onwaitingGuide *Guidance
 	proposalGuide  *Guidance
 	proposalVotes  int
 	quorum         int
+	state          State
 }
 
 const timeoutCount = 3
@@ -153,9 +194,11 @@ func NewServer(net *network, size int) *Server {
 	for i := 0; i < 3; i++ {
 		s.deadCount[i] = timeoutCount
 	}
+	s.state = Shifting
 
 	s.guide.InitDefault(size)
 	s.guide.IncEpoch(s.id)
+	s.prevGuide = s.guide.Clone()
 	s.debug.Info("%d guide: %+v", s.id, s.guide)
 
 	return s
@@ -169,42 +212,42 @@ func (p *Server) Start() {
 			select {
 			case <-t.C:
 				p.mu.Lock()
-
+				p.debug.Info("My local guidance: %v", p.guide)
 				deadID := []int{}
 				for id := 0; id < p.guide.clusterSize; id++ {
 					if id == p.id {
 						continue
 					}
-					if p.deadCount[id] == 0 {
+					if p.deadCount[id] <= 0 {
 						p.debug.Timeout("%d Warning: server %d is timeout", p.id, id)
 						deadID = append(deadID, id)
-					}
-					p.debug.Info("gossip with %d", id)
-					p.deadCount[id] -= 1
-					msg := &GossipeMessage{
-						msgType: 10,
-					}
-					if p.onwaitingGuide != nil {
-						msg.guide = *p.onwaitingGuide
 					} else {
-						msg.guide = p.guide
+						p.deadCount[id] -= 1
 					}
-					p.net.Send(id, msg)
 				}
+				changed := false
 				if len(deadID) > 0 {
 					if len(deadID) >= p.quorum {
-						p.debug.Info("I'm in a network partition that the majority can't find me")
+						p.debug.Info("I'm in a network partition that can't find majority." +
+							" Just stay.")
 					} else {
-						p.debug.Info("shifting since servers %d dead", deadID)
-						p.proposalGuide = p.guide.Clone()
-						p.proposalGuide.IncEpoch(p.id)
+						p.prevGuide = p.guide.Clone()
 						for _, id := range deadID {
-							p.proposalGuide.SetDead(id)
+							if !p.guide.cluster[id].alive {
+								continue
+							}
+							changed = true
+							p.debug.Info("change guidance since servers %d dead", deadID)
+							p.guide.SetDead(id)
 						}
-						p.onwaitingGuide = p.proposalGuide
-						p.proposalVotes = 1
-						p.shifting(p.proposalGuide, false)
+						if changed {
+							p.guide.IncEpoch(p.id)
+						}
 					}
+				}
+				p.gossip()
+				if changed {
+					p.tryRecovery()
 				}
 
 				p.mu.Unlock()
@@ -229,56 +272,16 @@ func (p *Server) Start() {
 			p.deadCount[from] = timeoutCount // reset counter
 			if mmsg, ok := msg.(Message); ok {
 				p.debug.Info("message type: %d", mmsg.Type())
-				if mmsg.Type() == 100 {
-					shift := mmsg.(*ShiftingMessage)
-					reply := &ShiftingMessage{
-						msgType:  101,
-						proposal: shift.proposal,
-						vote:     false,
-					}
-					if shift.proposal.epoch > p.guide.epoch &&
-						shift.proposal.cluster[p.id].alive {
-						if p.onwaitingGuide == nil ||
-							shift.proposal.epoch > p.onwaitingGuide.epoch {
-							reply.vote = true
-							p.onwaitingGuide = shift.proposal.Clone()
-						}
-					}
-					p.debug.Vote("vote (%v) for proposal %d", reply.vote, shift.proposal.epoch)
-					p.net.Send(from, reply)
-				} else if mmsg.Type() == 101 {
-					shift := mmsg.(*ShiftingMessage)
-					if p.proposalGuide != nil && shift.proposal.epoch == p.proposalGuide.epoch {
-						p.debug.GatherVote("server %d vote (%v) to proposal %d",
-							from, shift.vote, shift.proposal.epoch)
-						p.proposalVotes += 1
-						if p.proposalVotes >= p.quorum {
-							p.guide = *p.proposalGuide.Clone()
-							p.debug.GatherVote("change guidance to %v", p.guide)
-							p.shifting(&p.guide, true)
-							p.proposalGuide = nil
-							p.onwaitingGuide = nil
-							p.proposalVotes = 0
-						}
-					}
-				} else if mmsg.Type() == 110 {
-					shift := mmsg.(*ShiftingMessage)
-					if p.onwaitingGuide != nil &&
-						shift.proposal.epoch == p.onwaitingGuide.epoch {
-						p.guide = *shift.proposal.Clone()
-						p.debug.Info("change guidance to %v", p.guide)
-
-						p.proposalGuide = nil
-						p.onwaitingGuide = nil
-					}
-				} else if mmsg.Type() == 10 {
-					gossip := mmsg.(*GossipeMessage)
+				if mmsg.Type() == 10 {
+					gossip := mmsg.(*GossipMessage)
 					if gossip.guide.epoch > p.guide.epoch {
 						p.guide = *gossip.guide.Clone()
 						p.debug.Info("change guidance to %v", p.guide)
 						if !p.guide.cluster[p.id].alive {
 							p.debug.Info("I'm dead in epoch %d", p.guide.epoch)
 						}
+						// make sure local log in range guide.cluster[p.id] is up-to-date
+						p.tryRecovery()
 					}
 				}
 			}
@@ -289,23 +292,16 @@ func (p *Server) Start() {
 }
 
 func (p *Server) join(id int) {
-	p.debug.Info("server %d become online again", id)
-	if p.onwaitingGuide == nil {
-		if !p.guide.cluster[id].alive {
-			p.proposalGuide = p.guide.Clone()
-			p.proposalGuide.IncEpoch(p.id)
-			p.proposalGuide.SetAlive(id)
-			p.onwaitingGuide = p.proposalGuide
-			p.proposalVotes = 1
-			p.shifting(p.proposalGuide, false)
-		}
-	} else {
-		p.proposalGuide = p.onwaitingGuide.Clone()
-		p.proposalGuide.IncEpoch(p.id)
-		p.proposalGuide.SetAlive(id)
-		p.onwaitingGuide = p.proposalGuide
-		p.proposalVotes = 1
-		p.shifting(p.proposalGuide, false)
+	p.debug.Timeout("server %d become online again", id)
+	p.guide.SetAlive(id)
+	p.guide.IncEpoch(p.id)
+	p.gossip()
+}
+
+func (p *Server) tryRecovery() {
+	p.debug.Recovery("previous guide: %v", p.prevGuide)
+	if p.guide.compareRange(p.prevGuide, p.id) == -1 {
+		p.debug.Recovery("need recovery.")
 	}
 }
 
@@ -313,38 +309,30 @@ type Message interface {
 	Type() int
 }
 
-type GossipeMessage struct {
+type GossipMessage struct {
 	msgType int // 10
 	guide   Guidance
 }
 
-func (p *GossipeMessage) Type() int {
+func (p *GossipMessage) Type() int {
 	return p.msgType
 }
 
-type ShiftingMessage struct {
-	msgType  int // prepare 100,  prepare reply 101, commit 110
-	proposal Guidance
-	vote     bool
-}
-
-func (p *ShiftingMessage) Type() int {
-	return p.msgType
-}
-
-func (p *Server) shifting(proposal *Guidance, commit bool) {
-
-	msg := &ShiftingMessage{
-		msgType:  100,
-		proposal: *proposal,
-	}
-	if commit {
-		msg.msgType = 110
-	}
-	for i := 0; i < p.guide.clusterSize; i++ {
-		if i == p.id {
+func (p *Server) gossip() {
+	for id := 0; id < p.guide.clusterSize; id++ {
+		if id == p.id {
 			continue
 		}
-		p.net.Send(i, msg)
+
+		p.debug.Info("gossip with %d", id)
+		msg := &GossipMessage{
+			msgType: 10,
+		}
+		if p.onwaitingGuide != nil {
+			msg.guide = *p.onwaitingGuide
+		} else {
+			msg.guide = p.guide
+		}
+		p.net.Send(id, msg)
 	}
 }
