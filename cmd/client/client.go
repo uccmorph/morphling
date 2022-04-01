@@ -186,6 +186,16 @@ func oneTest(clients []*mpclient.MPClient) {
 			rNum := rand.Int31n(0xfffff)
 			// log.Printf("random key: 0x%08x", rNum)
 			requests <- requestCase{uint64(rNum) << 12, i}
+
+			// requests <- requestCase{0x14000000, i}
+			// switch i % 3 {
+			// case 0:
+			// 	requests <- requestCase{0x14000000, i}
+			// case 1:
+			// 	requests <- requestCase{0x88000000, i}
+			// case 2:
+			// 	requests <- requestCase{0xb2000000, i}
+			// }
 		}
 		close(requests)
 	}()

@@ -2,3 +2,4 @@ morphling
 .vscode
 cmd/client/client
 cmd/server/server
+cmd/stat-server/stat-server

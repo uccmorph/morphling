@@ -284,3 +284,56 @@ raft with control
 23699.16 3373.34
 22885.19 4366.83
 20938.82 5727.53
+
+## 2022.4.1
+single key，并且不使用stat-server情况下，unreplicated可以跑到52Kops.每台机器的测试都在在4秒内完成。
+./client -count 100000 -cn 40 -rmode u -saddr '10.1.6.233:9990,10.1.6.234:9990,10.1.6.235:9990'
+当-count为400000时，手动运行测试的结果和stat-server类似，为36Kops~44Kops
+yijian@kvs-backup:~/morphling/cmd/client$ ./multi-client.sh
+client                                                                                                                    100% 9202KB  71.9MB/s   00:00
+client-run.sh                                                                                                             100%  108   117.6KB/s   00:00
+2022/04/01 02:23:21 readMode: u, writeMode: false, controlMode: false
+2022/04/01 02:23:21 servers: [10.1.6.233:9990 10.1.6.234:9990 10.1.6.235:9990]
+2022/04/01 02:23:21 40 clients connection complete, will send 400000 total request
+2022/04/01 02:23:18 readMode: u, writeMode: false, controlMode: false
+2022/04/01 02:23:18 servers: [10.1.6.233:9990 10.1.6.234:9990 10.1.6.235:9990]
+2022/04/01 02:23:18 40 clients connection complete, will send 400000 total request
+2022/04/01 02:23:43 total 21.872784919 s, ops: 18287.56610012364
+2022/04/01 02:23:43 total latency 874188027556, average latency: 2185470 ns
+yijian@kvs-backup:~/morphling/cmd/client$ 2022/04/01 02:23:40 total 21.733815874 s, ops: 18404.499344200158
+2022/04/01 02:23:40 total latency 868673440427, average latency: 2171683 ns
+
+yijian@kvs-backup:~/morphling/cmd/client$ ./multi-client.sh
+client                                                                                                                    100% 9202KB  72.8MB/s   00:00
+client-run.sh                                                                                                             100%  108   131.7KB/s   00:00
+2022/04/01 02:26:39 readMode: u, writeMode: false, controlMode: false
+2022/04/01 02:26:39 servers: [10.1.6.233:9990 10.1.6.234:9990 10.1.6.235:9990]
+2022/04/01 02:26:39 40 clients connection complete, will send 400000 total request
+2022/04/01 02:26:36 readMode: u, writeMode: false, controlMode: false
+2022/04/01 02:26:36 servers: [10.1.6.233:9990 10.1.6.234:9990 10.1.6.235:9990]
+2022/04/01 02:26:36 40 clients connection complete, will send 400000 total request
+2022/04/01 02:26:57 total 17.743398873 s, ops: 22543.59510615957
+2022/04/01 02:26:57 total latency 708875492358, average latency: 1772188 ns
+yijian@kvs-backup:~/morphling/cmd/client$ 2022/04/01 02:26:54 total 17.422425852 s, ops: 22958.915331189783
+2022/04/01 02:26:54 total latency 696365499569, average latency: 1740913 ns
+说明手动运行时误差较大，需要较长时间的运行才能获得真实的吞吐数据
+single key的stat-server结果：
+7573.53 263.64
+16621.82 240.11
+24415.74 244.94
+33297.42 239.60
+33789.30 295.10
+37167.26 322.16
+36227.46 385.64
+37717.44 423.28
+35822.89 501.45
+35572.16 561.24
+34935.75 685.74
+33438.68 896.08
+34323.39 1047.57
+37835.71 1055.97
+37506.98 1331.61
+36634.80 1635.98
+36077.88 2213.60
+34086.77 2931.54
+41999.69 2849.90
