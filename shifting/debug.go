@@ -56,3 +56,12 @@ func (l *Logger) GatherVote(format string, args ...interface{}) {
 	colorFmt = fmt.Sprintf(l.colorFmt, colorFmt)
 	l.logger.Printf(colorFmt, printThing)
 }
+
+func (l *Logger) Recovery(format string, args ...interface{}) {
+	printThing := fmt.Sprintf(format, args...)
+	printThing = fmt.Sprintf("%s %s", l.prefix, printThing)
+
+	colorFmt := "\033[1;94m%s\033[0m"
+	colorFmt = fmt.Sprintf(l.colorFmt, colorFmt)
+	l.logger.Printf(colorFmt, printThing)
+}
