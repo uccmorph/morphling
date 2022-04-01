@@ -153,6 +153,7 @@ func (p *Replica) HandleClientMsg(msg *HandlerInfo) {
 
 		replyInfo.Res <- replyInfo
 
+	// for morphling read and unreplicated read
 	case MsgTypeClientRead:
 		if guide.Epoch == args.Guide.Epoch {
 			keyStr := strconv.FormatUint(args.KeyHash, 10)
@@ -164,8 +165,18 @@ func (p *Replica) HandleClientMsg(msg *HandlerInfo) {
 			reply.Type = args.Type
 		} else {
 			reply.Guide = &guide
+			reply.Success = replyStatusWrongGuidance
 		}
 		replyInfo.Res <- replyInfo
+
+	// for replicated write
+	case MsgTypeClientWrite:
+		keyStr := strconv.FormatUint(args.KeyHash, 10)
+		p.storage.Set(CfDefault, []byte(keyStr), []byte(args.Command.Value))
+
+		replyInfo.Res <- replyInfo
+
+	// for morphling write and raft write
 	case MsgTypeClientProposal:
 		pos := CalcKeyPos(args.KeyHash, guide.GroupMask, guide.GroupSize)
 		rlog := p.raftCore[pos]

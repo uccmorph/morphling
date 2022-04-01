@@ -13,6 +13,7 @@ const (
 	MsgTypeGetGuidance
 	MsgTypeClientProposal
 	MsgTypeClientRead
+	MsgTypeClientWrite
 	MsgTypeAppend
 	MsgTypeAppendReply
 	MsgTypeGossip
@@ -39,8 +40,8 @@ type ClientMsg struct {
 	ClientID int
 	Seq      int
 	KeyHash  uint64
-	Data     []byte
-	Command  Command
+	Data     []byte  // only for reply
+	Command  Command // only for request
 }
 
 const (
@@ -74,7 +75,7 @@ type replyStatus uint64
 
 const (
 	ReplyStatusSuccess replyStatus = iota
-	replyStatusStaleGuidance
+	replyStatusWrongGuidance
 	replyStatusMissingEntries
 	replyStatusMismatchEntry
 	replyStatusTimeout

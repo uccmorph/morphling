@@ -1,12 +1,14 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"log"
 	"morphling/mpserverv2"
 	"net"
 	"net/http"
 	"net/rpc"
+	"os"
 	"sync"
 	"time"
 )
@@ -31,6 +33,20 @@ type Server struct {
 }
 
 func newServer() *Server {
+	flag.IntVar(&cfgClientMachineNum, "mn", 1, "number of client machines to control")
+	flag.Parse()
+
+	isSet := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "mn" {
+			isSet = true
+		}
+	})
+	if !isSet {
+		flag.Usage()
+		os.Exit(1)
+	}
+
 	p := &Server{}
 
 	p.clients = make(map[int]*mpserverv2.StatisticsArgs, cfgClientMachineNum)

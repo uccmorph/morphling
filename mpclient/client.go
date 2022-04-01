@@ -145,6 +145,7 @@ func (p *MPClient) RunReplicaLoop() {
 }
 
 func (p *MPClient) UnreplicateReadKV(key uint64) (string, error) {
+	p.seq += 1
 	args := &mpserverv2.ClientMsg{
 		Type:     mpserverv2.MsgTypeClientRead,
 		Guide:    &p.guide,
@@ -155,8 +156,7 @@ func (p *MPClient) UnreplicateReadKV(key uint64) (string, error) {
 			Type: mpserverv2.CommandTypeRead,
 		},
 	}
-	// keyPos := mpserverv2.CalcKeyPos(key, p.guide.GroupMask, p.guide.GroupSize)
-	// sendTo := p.guide.ReplicaID(keyPos)
+
 	sendTo := 0
 	reply := &mpserverv2.ClientMsg{}
 	// log.Printf("ready to call %v", p.replicaAddr[sendTo])
@@ -181,9 +181,7 @@ func (p *MPClient) RaftReadKV(key uint64) (string, error) {
 			Key:  key,
 		},
 	}
-	// log.Printf("client %v send seq %v", p.id, p.seq)
-	// keyPos := mpserverv2.CalcKeyPos(key, p.guide.GroupMask, p.guide.GroupSize)
-	// sendTo := p.guide.ReplicaID(keyPos)
+
 	sendTo := 0
 	reply := &mpserverv2.ClientMsg{}
 	err := p.replicas[sendTo].Call("RPCEndpoint.ClientCall", args, reply)
@@ -225,14 +223,6 @@ func (p *MPClient) ReadKVFast(key uint64) (string, error) {
 	}
 	var res string
 
-	// gdchs := make([]chan *mpserverv2.ClientMsg, 0)
-	// for i := range p.replyChs {
-	// 	if i == sendTo {
-	// 		continue
-	// 	}
-	// 	gdchs = append(gdchs, p.replyChs[i])
-	// }
-
 	var quorum uint32
 	reachQuorum := make(chan bool, 1)
 	var prlReplied uint32 = 0
@@ -262,99 +252,8 @@ func (p *MPClient) ReadKVFast(key uint64) (string, error) {
 		}(i)
 	}
 
-	// select {
-	// case re := <-p.replyChs[sendTo]:
-	// 	res = string(re.Data)
-	// }
-	// for i := range gdchs {
-	// 	<-gdchs[i]
-	// }
-
 	<-reachQuorum
 	return res, nil
-}
-
-func (p *MPClient) ReadKV(key uint64) (string, error) {
-
-	args := &mpserverv2.ClientMsg{
-		Type:     mpserverv2.MsgTypeClientRead,
-		Guide:    &p.guide,
-		KeyHash:  key,
-		Seq:      p.seq,
-		ClientID: p.id,
-		Command: mpserverv2.Command{
-			Type: mpserverv2.CommandTypeRead,
-		},
-	}
-	keyPos := mpserverv2.CalcKeyPos(key, p.guide.GroupMask, p.guide.GroupSize)
-	sendTo := p.guide.ReplicaID(keyPos)
-	replyCh := make(chan *mpserverv2.ClientMsg)
-	mainCh := make(chan *mpserverv2.ClientMsg)
-	resCh := make(chan string)
-
-	// log.Printf("read kv in replica %v", sendTo)
-	go func() {
-
-		go func() {
-			reply := &mpserverv2.ClientMsg{}
-			// log.Printf("ready to call %v", p.replicaAddr[sendTo])
-			err := p.replicas[sendTo].Call("RPCEndpoint.ClientCall", args, reply)
-			if err != nil {
-				log.Printf("call %v MsgTypeClientRead error: %v", sendTo, err)
-				mainCh <- nil
-				return
-			}
-			// log.Printf("replica %v read result: %v", sendTo, string(reply.Data))
-			mainCh <- reply
-		}()
-
-		for i := range p.replicas {
-			if i == sendTo {
-				continue
-			}
-			go func(i int) {
-				args := &mpserverv2.ClientMsg{
-					Type: mpserverv2.MsgTypeGetGuidance,
-				}
-				reply := &mpserverv2.ClientMsg{}
-				// log.Printf("ready to call %v", p.replicaAddr[i])
-				err := p.replicas[i].Call("RPCEndpoint.ClientCall", args, reply)
-				if err != nil {
-					log.Printf("call %v GetGuidance error: %v", i, err)
-					return
-				}
-				// log.Printf("replica %v guidance: %+v", i, reply.Guide)
-				replyCh <- reply
-			}(i)
-		}
-
-		var res string
-		var targetEpoch uint64
-		gm := make(map[uint64]int)
-		for {
-			select {
-			case mainRes := <-mainCh:
-				res = string(mainRes.Data)
-				targetEpoch = mainRes.Guide.Epoch
-				gm[targetEpoch] += 1
-
-			case guiRes := <-replyCh:
-				gm[guiRes.Guide.Epoch] += 1
-			}
-			// log.Printf("gm: %+v", gm)
-			if gm[targetEpoch] >= p.quorum {
-				select {
-				case resCh <- res:
-					// log.Printf("send res")
-				default:
-				}
-			}
-		}
-	}()
-
-	resultStr := <-resCh
-	// log.Printf("finish ReadKV")
-	return resultStr, nil
 }
 
 func (p *MPClient) WriteKV(key uint64, value string) error {
@@ -363,7 +262,6 @@ func (p *MPClient) WriteKV(key uint64, value string) error {
 		Type:     mpserverv2.MsgTypeClientProposal,
 		Guide:    &p.guide,
 		KeyHash:  key,
-		Data:     []byte(value),
 		ClientID: p.id,
 		Seq:      p.seq,
 		Command: mpserverv2.Command{
@@ -375,6 +273,58 @@ func (p *MPClient) WriteKV(key uint64, value string) error {
 	keyPos := mpserverv2.CalcKeyPos(key, p.guide.GroupMask, p.guide.GroupSize)
 	sendTo := p.guide.ReplicaID(keyPos)
 
+	reply := &mpserverv2.ClientMsg{}
+	err := p.replicas[sendTo].Call("RPCEndpoint.ClientCall", args, reply)
+	if err != nil {
+		log.Printf("call %v MsgTypeClientProposal error: %v", sendTo, err)
+		return err
+	}
+
+	return nil
+}
+
+func (p *MPClient) UnreplicatedWriteKV(key uint64, value string) error {
+	p.seq += 1
+	args := &mpserverv2.ClientMsg{
+		Type:     mpserverv2.MsgTypeClientWrite,
+		Guide:    &p.guide,
+		KeyHash:  key,
+		ClientID: p.id,
+		Seq:      p.seq,
+		Command: mpserverv2.Command{
+			Type:  mpserverv2.CommandTypeWrite,
+			Key:   key,
+			Value: value,
+		},
+	}
+
+	sendTo := 0
+	reply := &mpserverv2.ClientMsg{}
+	err := p.replicas[sendTo].Call("RPCEndpoint.ClientCall", args, reply)
+	if err != nil {
+		log.Printf("call %v MsgTypeClientWrite error: %v", sendTo, err)
+		return err
+	}
+
+	return nil
+}
+
+func (p *MPClient) RaftWriteKV(key uint64, value string) error {
+	p.seq += 1
+	args := &mpserverv2.ClientMsg{
+		Type:     mpserverv2.MsgTypeClientProposal,
+		Guide:    &p.guide,
+		KeyHash:  key,
+		ClientID: p.id,
+		Seq:      p.seq,
+		Command: mpserverv2.Command{
+			Type:  mpserverv2.CommandTypeWrite,
+			Key:   key,
+			Value: value,
+		},
+	}
+
+	sendTo := 0
 	reply := &mpserverv2.ClientMsg{}
 	err := p.replicas[sendTo].Call("RPCEndpoint.ClientCall", args, reply)
 	if err != nil {
