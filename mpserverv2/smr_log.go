@@ -11,7 +11,7 @@ type Entry struct {
 	Data  Command
 }
 
-type RaftLog struct {
+type SMRLog struct {
 	committed uint64
 
 	applied uint64
@@ -28,9 +28,8 @@ type RaftLog struct {
 
 // newLog returns log using the given storage. It recovers the log
 // to the state that it just commits and applies the latest snapshot.
-func newLog() *RaftLog {
-	// Your Code Here (2A).
-	l := &RaftLog{}
+func newLog() *SMRLog {
+	l := &SMRLog{}
 
 	l.entries = []Entry{}
 
@@ -39,15 +38,14 @@ func newLog() *RaftLog {
 	return l
 }
 
-func (l *RaftLog) firstIndex() uint64 {
+func (l *SMRLog) firstIndex() uint64 {
 	return l.logStartAt
 }
 
 // We need to compact the log entries in some point of time like
 // storage compact stabled log entries prevent the log entries
 // grow unlimitedly in memory
-func (l *RaftLog) maybeCompact() {
-	// Your Code Here (2C).
+func (l *SMRLog) maybeCompact() {
 }
 
 //
@@ -63,7 +61,7 @@ func (l *RaftLog) maybeCompact() {
 // There are times that storage is not matched with l.entries
 // This may happen after truncation, like TestFollowerAppendEntries2AB
 // So entries in storage are just replicated, not committed.
-func (l *RaftLog) positionInRaftLog(entryIdx uint64) uint64 {
+func (l *SMRLog) positionInRaftLog(entryIdx uint64) uint64 {
 
 	if len(l.entries) == 0 {
 		panic(fmt.Sprintf("index %v is not in l.entries", entryIdx))
@@ -74,8 +72,7 @@ func (l *RaftLog) positionInRaftLog(entryIdx uint64) uint64 {
 
 // unstableEntries return all the unstable entries
 // don't return nil, or TestFollowerAppendEntries2AB may fail
-func (l *RaftLog) unstableEntries() []Entry {
-	// Your Code Here (2A).
+func (l *SMRLog) unstableEntries() []Entry {
 
 	if l.stabled+1 > l.LastIndex() {
 		return []Entry{}
@@ -85,8 +82,7 @@ func (l *RaftLog) unstableEntries() []Entry {
 }
 
 // nextEnts returns all the committed but not applied entries
-func (l *RaftLog) nextEnts() (ents []Entry) {
-	// Your Code Here (2A).
+func (l *SMRLog) nextEnts() (ents []Entry) {
 
 	// todo: what if l.applied is in storage?
 	l.debuglog.Info("nextEnts: applied: %v, committed: %v", l.applied, l.committed)
@@ -98,16 +94,14 @@ func (l *RaftLog) nextEnts() (ents []Entry) {
 }
 
 // LastIndex return the last index of the log entries
-func (l *RaftLog) LastIndex() uint64 {
-	// Your Code Here (2A).
+func (l *SMRLog) LastIndex() uint64 {
 
 	return l.lastEntry().Index
 }
 
 // Term return the term of the entry in the given index
 // Never return error
-func (l *RaftLog) Term(i uint64) (uint64, error) {
-	// Your Code Here (2A).
+func (l *SMRLog) Term(i uint64) (uint64, error) {
 	if len(l.entries) == 0 {
 		return 0, nil
 	}
@@ -119,7 +113,7 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 	return l.entries[l.positionInRaftLog(i)].Term, nil
 }
 
-func (l *RaftLog) lastEntry() Entry {
+func (l *SMRLog) lastEntry() Entry {
 	if len(l.entries) == 0 {
 		return Entry{
 			Term:  l.oldTerm,
@@ -130,11 +124,11 @@ func (l *RaftLog) lastEntry() Entry {
 	return l.entries[len(l.entries)-1]
 }
 
-func (l *RaftLog) uncommittedEntries() []*Entry {
+func (l *SMRLog) uncommittedEntries() []*Entry {
 	return l.entriesFrom(l.committed + 1)
 }
 
-func (l *RaftLog) appendCmd(term uint64, cmd Command) uint64 {
+func (l *SMRLog) appendCmd(term uint64, cmd Command) uint64 {
 	e := Entry{
 		Term:  term,
 		Index: l.LastIndex() + 1,
@@ -145,7 +139,7 @@ func (l *RaftLog) appendCmd(term uint64, cmd Command) uint64 {
 	return e.Index
 }
 
-func (l *RaftLog) appendNoop(term uint64) uint64 {
+func (l *SMRLog) appendNoop(term uint64) uint64 {
 	e := Entry{
 		Term:  term,
 		Index: l.LastIndex() + 1,
@@ -157,10 +151,10 @@ func (l *RaftLog) appendNoop(term uint64) uint64 {
 }
 
 // It's safe to call multiple times, since commit index only increment.
-func (l *RaftLog) commitLogTo(idx uint64) bool {
+func (l *SMRLog) commitLogTo(idx uint64) bool {
 	nextCommitIdx := min(l.lastEntry().Index, idx)
 	if l.committed < nextCommitIdx {
-		l.debuglog.InfoCommit("RaftLog commit %v", nextCommitIdx)
+		l.debuglog.InfoCommit("SMRLog commit %v", nextCommitIdx)
 		l.committed = nextCommitIdx
 		return true
 	}
@@ -168,11 +162,11 @@ func (l *RaftLog) commitLogTo(idx uint64) bool {
 	return false
 }
 
-func (l *RaftLog) commitAt() uint64 {
+func (l *SMRLog) commitAt() uint64 {
 	return l.committed
 }
 
-func (l *RaftLog) showAllEntries() string {
+func (l *SMRLog) showAllEntries() string {
 	res := ""
 	for i := range l.entries {
 		res += fmt.Sprintf("(Term: %v, Index: %v)", l.entries[i].Term, l.entries[i].Index)
@@ -180,7 +174,7 @@ func (l *RaftLog) showAllEntries() string {
 	return res
 }
 
-func (l *RaftLog) showEntriesProfile() string {
+func (l *SMRLog) showEntriesProfile() string {
 	res := ""
 	if len(l.entries) == 0 {
 		return res
@@ -192,7 +186,7 @@ func (l *RaftLog) showEntriesProfile() string {
 }
 
 // truncate include `truncateAt` entry
-func (l *RaftLog) truncateAndAppendEntries(truncateAt uint64, entries []*Entry) {
+func (l *SMRLog) truncateAndAppendEntries(truncateAt uint64, entries []*Entry) {
 	// if index <= l.stabled, then some place must be wrong
 	if truncateAt <= l.stabled {
 		l.debuglog.Error("truncate to %v, but stabled index is %v. Decide what to do next...", truncateAt, l.stabled)
@@ -215,7 +209,7 @@ func (l *RaftLog) truncateAndAppendEntries(truncateAt uint64, entries []*Entry) 
 
 // return nil if idx > l.LastIndex(), or inner error
 // Since l.entries preload storage, we only need to get entries from l.entries
-func (l *RaftLog) entriesFrom(idx uint64) []*Entry {
+func (l *SMRLog) entriesFrom(idx uint64) []*Entry {
 	l.debuglog.InfoDeep("retrive entry from: %v, curr stable: %v, last: %v", idx, l.stabled, l.LastIndex())
 	if idx > l.LastIndex() {
 		return nil
@@ -251,7 +245,7 @@ func (l *RaftLog) entriesFrom(idx uint64) []*Entry {
 	return res
 }
 
-func (l *RaftLog) replaceEntry(entry *Entry) uint64 {
+func (l *SMRLog) replaceEntry(entry *Entry) uint64 {
 	if entry.Term == 0 {
 		l.entries = make([]Entry, 1)
 		l.entries[0] = *entry
@@ -260,14 +254,14 @@ func (l *RaftLog) replaceEntry(entry *Entry) uint64 {
 	return l.appendCmd(entry.Term, entry.Data)
 }
 
-func (l *RaftLog) updateApply(entries []Entry) {
+func (l *SMRLog) updateApply(entries []Entry) {
 	if len(entries) == 0 {
 		return
 	}
 	l.applied = entries[len(entries)-1].Index
 }
 
-func (l *RaftLog) updateStable(entries []Entry) {
+func (l *SMRLog) updateStable(entries []Entry) {
 	if len(entries) == 0 {
 		return
 	}

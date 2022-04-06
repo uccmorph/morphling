@@ -11,13 +11,15 @@ import (
 )
 
 type MPClient struct {
-	replicaAddr  []string
-	replicas     []*rpc.Client
-	guidanceSrvs []*rpc.Client
-	guide        mpserverv2.Guidance
-	quorum       int
-	id           int
-	seq          int
+	replicaAddr   []string
+	replicas      []*rpc.Client
+	guidanceSrvs  []*rpc.Client
+	guide         mpserverv2.Guidance
+	quorum        int
+	id            int
+	seq           int
+	guidancePorts []string
+	curp          bool
 
 	chs      []chan *mpserverv2.ClientMsg
 	replyChs []chan *mpserverv2.ClientMsg
@@ -43,6 +45,14 @@ func NewMPClient(rAddr []string, id int) *MPClient {
 	return p
 }
 
+func (p *MPClient) SetGuidancePorts(ports []string) {
+	p.guidancePorts = ports
+}
+
+func (p *MPClient) SetCURPMode(curp bool) {
+	p.curp = curp
+}
+
 func (p *MPClient) Disconnect() {
 	for i := range p.replicas {
 		p.replicas[i].Close()
@@ -64,8 +74,16 @@ func (p *MPClient) Connet() {
 					continue
 				}
 				p.replicas[i] = end
-				// hard code guidanceSrv port to 9996
-				guidanceSrv := strings.Split(p.replicaAddr[i], ":")[0] + ":" + "9996"
+				if p.curp {
+					return
+				}
+				var guidanceSrv string
+				if len(p.guidancePorts) != 0 {
+					guidanceSrv = strings.Split(p.replicaAddr[i], ":")[0] + ":" + p.guidancePorts[i]
+				} else {
+					// hard code guidanceSrv port to 9996
+					guidanceSrv = strings.Split(p.replicaAddr[i], ":")[0] + ":" + "9996"
+				}
 				gEnd, err := rpc.DialHTTP("tcp", guidanceSrv)
 				if err != nil {
 					log.Fatalf("cannot connect to guidance service: %s, %v", guidanceSrv, err)
@@ -80,6 +98,10 @@ func (p *MPClient) Connet() {
 }
 
 func (p *MPClient) GetGuidance() {
+	if p.curp {
+		p.RunReplicaLoop()
+		return
+	}
 	ch := make(chan *mpserverv2.Guidance)
 	count := 0
 	total := 0
@@ -123,10 +145,10 @@ func (p *MPClient) GetGuidance() {
 func (p *MPClient) RunReplicaLoop() {
 	for i := range p.chs {
 		go func(i int) {
-			// log.Printf("start client [%d] loop to replica %d", p.id, i)
+			log.Printf("start client [%d] loop to replica %d", p.id, i)
 			for cmsg := range p.chs[i] {
 				reply := &mpserverv2.ClientMsg{}
-				// log.Printf("ready to call %v", p.replicaAddr[i])
+				log.Printf("ready to call %v", p.replicaAddr[i])
 				if cmsg.Type == mpserverv2.MsgTypeGetGuidance {
 					err := p.replicas[i].Call("GuidanceEndpoint.Call", cmsg, reply)
 					if err != nil {
@@ -254,6 +276,78 @@ func (p *MPClient) ReadKVFast(key uint64) (string, error) {
 
 	<-reachQuorum
 	return res, nil
+}
+
+func (p *MPClient) CURPReadKV(key uint64) (string, error) {
+	p.seq += 1
+	for i := range p.chs {
+		args := &mpserverv2.ClientMsg{
+			Type:     mpserverv2.MsgTypeClientCURPProposal,
+			Seq:      p.seq,
+			ClientID: p.id,
+			Command: mpserverv2.Command{
+				Type: mpserverv2.CommandTypeRead,
+				Key:  key,
+			},
+		}
+		p.chs[i] <- args
+	}
+
+	var value string
+	var q quorum
+	q.target = 2
+	quorumWait := make(chan bool, 1)
+	for i := range p.replyChs {
+		go func(chi int) {
+			reply := <-p.replyChs[chi]
+			if chi == 0 {
+				if reply.Success == mpserverv2.ReplyStatusInterfere {
+					log.Printf("replica %d, this cmd is non-commute %v", chi, reply.Seq)
+					q.Reject()
+				} else {
+					value = string(reply.Data)
+					q.Accept()
+				}
+			} else {
+				if reply.Success == mpserverv2.ReplyStatusInterfere {
+					log.Printf("replica %d, this cmd is non-commute %v", chi, reply.Seq)
+					q.Reject()
+				} else {
+					q.Accept()
+				}
+			}
+
+			if q.EnoughAccept() {
+				quorumWait <- true
+			}
+			if q.EnoughReject() {
+				quorumWait <- false
+			}
+		}(i)
+	}
+
+	wait := <-quorumWait
+	if !wait {
+		args := &mpserverv2.ClientMsg{
+			Type:     mpserverv2.MsgTypeClientProposal,
+			Seq:      p.seq,
+			ClientID: p.id,
+			Command: mpserverv2.Command{
+				Type: mpserverv2.CommandTypeRead,
+				Key:  key,
+			},
+		}
+		sendTo := 0
+		reply := &mpserverv2.ClientMsg{}
+		err := p.replicas[sendTo].Call("RPCEndpoint.ClientCall", args, reply)
+		if err != nil {
+			log.Printf("call %v MsgTypeClientProposal error: %v", sendTo, err)
+			return "", err
+		}
+		value = string(args.Data)
+	}
+
+	return value, nil
 }
 
 func (p *MPClient) WriteKV(key uint64, value string) error {

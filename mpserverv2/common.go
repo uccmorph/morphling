@@ -12,6 +12,7 @@ const (
 	MsgTypeClientReply
 	MsgTypeGetGuidance
 	MsgTypeClientProposal
+	MsgTypeClientCURPProposal
 	MsgTypeClientRead
 	MsgTypeClientWrite
 	MsgTypeAppend
@@ -80,6 +81,7 @@ const (
 	replyStatusMismatchEntry
 	replyStatusTimeout
 	ReplyStatusNoValue
+	ReplyStatusInterfere
 )
 
 type ReplicaStatus struct {
@@ -180,7 +182,6 @@ type ClientRegisterReply struct {
 
 // sent from stat-server to clients
 type StartTestArgs struct {
-	TestCount  int
 	ClientNums int
 	Finish     bool
 }

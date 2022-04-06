@@ -16,11 +16,12 @@ type Config struct {
 	GuidanceCh chan *HandlerInfo
 	Me         int
 	RaftLike   bool
+	CURPLike   bool
 }
 
 type Replica struct {
 	localGuidance  Guidance
-	raftCore       []*Raft
+	raftCore       []*SMR
 	msgCh          chan *HandlerInfo
 	gCh            chan *HandlerInfo
 	me             int
@@ -49,9 +50,13 @@ func CreateReplica(config *Config) *Replica {
 	}
 
 	p.debugLog = mplogger.NewRaftDebugLogger()
-	p.raftCore = make([]*Raft, defaultKeySpace)
+	p.raftCore = make([]*SMR, defaultKeySpace)
 	for i := range p.raftCore {
-		p.raftCore[i] = newRaft(config.Me, peers, p.debugLog)
+		p.raftCore[i] = newSMR(config.Me, peers, p.debugLog)
+	}
+
+	if config.CURPLike {
+		log.Fatalf("can not use CURP in generic replica")
 	}
 
 	go p.mainLoop()
@@ -62,7 +67,7 @@ func CreateReplica(config *Config) *Replica {
 func (p *Replica) mainLoop() {
 	for {
 		// p.debugLog.Info("waiting new msg...")
-		guide := p.localGuidance
+
 		select {
 		case msg := <-p.msgCh:
 			// time.Sleep(time.Millisecond * 1)
@@ -71,19 +76,8 @@ func (p *Replica) mainLoop() {
 				p.HandleClientMsg(msg)
 
 			} else {
-				args := msg.RMsg
-				pos := CalcKeyPos(args.KeyHash, guide.GroupMask, guide.GroupSize)
-				rlog := p.raftCore[pos]
-				p.debugLog.Info("process log group %v", pos)
-				rlog.Step(*args)
-				commitEntries := rlog.RaftLog.nextEnts()
-				p.processCommit(pos, commitEntries)
-				rlog.RaftLog.updateApply(commitEntries)
-				msgs := rlog.readNextMsg()
-				for i := range msgs {
-					msgs[i].KeyHash = args.KeyHash
-				}
-				p.sendReplicaMsgs(msgs)
+
+				p.HandleReplicaMsg(msg)
 			}
 		}
 	}
@@ -132,6 +126,23 @@ func (p *Replica) processCommit(pos uint64, entries []Entry) {
 		hinfo.CMsg = reply
 		hinfo.Res <- hinfo
 	}
+}
+
+func (p *Replica) HandleReplicaMsg(msg *HandlerInfo) {
+	guide := p.localGuidance
+	args := msg.RMsg
+	pos := CalcKeyPos(args.KeyHash, guide.GroupMask, guide.GroupSize)
+	rlog := p.raftCore[pos]
+	p.debugLog.Info("process log group %v", pos)
+	rlog.Step(*args)
+	commitEntries := rlog.SMRLog.nextEnts()
+	p.processCommit(pos, commitEntries)
+	rlog.SMRLog.updateApply(commitEntries)
+	msgs := rlog.readNextMsg()
+	for i := range msgs {
+		msgs[i].KeyHash = args.KeyHash
+	}
+	p.sendReplicaMsgs(msgs)
 }
 
 func (p *Replica) HandleClientMsg(msg *HandlerInfo) {
@@ -193,7 +204,7 @@ func (p *Replica) HandleClientMsg(msg *HandlerInfo) {
 			panic("handler info can have 0 uuid")
 		}
 		rlog.Step(replicaMsg)
-		entries := rlog.RaftLog.unstableEntries()
+		entries := rlog.SMRLog.unstableEntries()
 		if len(entries) != 1 {
 			panic(fmt.Sprintf("should have only 1 entry, but now have %v", len(entries)))
 		}
@@ -207,7 +218,7 @@ func (p *Replica) HandleClientMsg(msg *HandlerInfo) {
 		}
 		p.sendReplicaMsgs(msgs)
 
-		rlog.RaftLog.updateStable(entries)
+		rlog.SMRLog.updateStable(entries)
 	}
 }
 

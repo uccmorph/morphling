@@ -3,9 +3,7 @@
 package mpserverv2
 
 import (
-	"errors"
 	"fmt"
-	"math/rand"
 	"morphling/mplogger"
 )
 
@@ -28,10 +26,6 @@ func (st StateType) String() string {
 	return stmap[uint64(st)]
 }
 
-// ErrProposalDropped is returned when the proposal is ignored by some cases,
-// so that the proposer can be notified and fail fast.
-var ErrProposalDropped = errors.New("raft proposal dropped")
-
 // Progress represents a follower’s progress in the view of the leader. Leader maintains
 // progresses of all followers, and sends entries to the follower based on its progress.
 type Progress struct {
@@ -42,31 +36,14 @@ func (p *Progress) String() string {
 	return fmt.Sprintf("{Match: %v, Next: %v}", p.Match, p.Next)
 }
 
-func randomizeTimeout(base int, id int) func() int {
-	rand.Seed(int64(id))
-	// randomSeq := make([]int, base)
-	// for i := range randomSeq {
-	// 	randomSeq[i] = (i + base)
-	// }
-	// rand.Shuffle(base, func(i, j int) {
-	// 	randomSeq[i], randomSeq[j] = randomSeq[j], randomSeq[i]
-	// })
-	// returnCount := 0
-	return func() int {
-		// returnCount = (returnCount + 1) % base
-		// return randomSeq[returnCount]
-		return rand.Intn(base) + base
-	}
-}
-
-type Raft struct {
+type SMR struct {
 	id int
 
 	Term uint64
 	Vote uint64
 
 	// the log
-	RaftLog *RaftLog
+	SMRLog *SMRLog
 
 	// log replication progress of each peers
 	Prs map[int]*Progress
@@ -84,16 +61,16 @@ type Raft struct {
 	replyClient func()
 }
 
-// newRaft return a raft peer with the given config
-func newRaft(id int, peers []int, debugLogger *mplogger.RaftLogger) *Raft {
+// newSMR return a raft peer with the given config
+func newSMR(id int, peers []int, debugLogger *mplogger.RaftLogger) *SMR {
 
-	r := &Raft{}
+	r := &SMR{}
 	r.id = id
 
 	r.msgs = make([]ReplicaMsg, 0)
 	r.Term = 0
 
-	r.RaftLog = newLog()
+	r.SMRLog = newLog()
 	r.Prs = make(map[int]*Progress)
 
 	if len(peers) == 0 {
@@ -115,18 +92,18 @@ func newRaft(id int, peers []int, debugLogger *mplogger.RaftLogger) *Raft {
 
 	r.debuglog = debugLogger
 	r.debuglog.SetContext("", r.Term, r.id)
-	r.RaftLog.debuglog = r.debuglog
+	r.SMRLog.debuglog = r.debuglog
 
 	return r
 }
 
-func (r *Raft) sendAppend(to int) bool {
+func (r *SMR) sendAppend(to int) bool {
 
 	// todo: send entries according to r.Prs
-	if r.Prs[to].Next == r.RaftLog.firstIndex() {
+	if r.Prs[to].Next == r.SMRLog.firstIndex() {
 		r.Prs[to].Next += 1
 	}
-	entries := r.RaftLog.entriesFrom(r.Prs[to].Next)
+	entries := r.SMRLog.entriesFrom(r.Prs[to].Next)
 	if entries == nil || len(entries) == 0 {
 		return false
 	}
@@ -135,14 +112,14 @@ func (r *Raft) sendAppend(to int) bool {
 	if entries[0].Term == 0 {
 		logterm = 0
 	} else {
-		logterm, _ = r.RaftLog.Term(entries[0].Index - 1)
+		logterm, _ = r.SMRLog.Term(entries[0].Index - 1)
 
 	}
 	msg := ReplicaMsg{
 		Type:      MsgTypeAppend,
 		To:        to,
 		From:      r.id,
-		CommitTo:  r.RaftLog.commitAt(),
+		CommitTo:  r.SMRLog.commitAt(),
 		PrevEpoch: logterm,
 		PrevIdx:   entries[0].Index - 1,
 		Entries:   entries,
@@ -154,19 +131,19 @@ func (r *Raft) sendAppend(to int) bool {
 	return false
 }
 
-func (r *Raft) forAllPeers(do func(id int)) {
+func (r *SMR) forAllPeers(do func(id int)) {
 	for _, id := range r.peers {
 		do(id)
 	}
 }
 
-func (r *Raft) readNextMsg() []ReplicaMsg {
+func (r *SMR) readNextMsg() []ReplicaMsg {
 	msgs := r.msgs
 	r.msgs = make([]ReplicaMsg, 0)
 	return msgs
 }
 
-func (r *Raft) Step(m ReplicaMsg) error {
+func (r *SMR) Step(m ReplicaMsg) error {
 	switch m.Type {
 	case MsgTypeAppend:
 		r.handleAppendEntries(m)
@@ -179,7 +156,7 @@ func (r *Raft) Step(m ReplicaMsg) error {
 		}
 
 		r.debuglog.Info("all progress: %+v", r.Prs)
-		r.Prs[r.id].Match = r.RaftLog.LastIndex()
+		r.Prs[r.id].Match = r.SMRLog.LastIndex()
 		r.Prs[r.id].Next = r.Prs[r.id].Match + 1
 		r.forAllPeers(func(id int) {
 			r.Prs[id].Match = r.Prs[r.id].Match - 1
@@ -192,12 +169,12 @@ func (r *Raft) Step(m ReplicaMsg) error {
 
 }
 
-func (r Raft) leaderStepAppendResp(m ReplicaMsg) []ReplicaMsg {
+func (r SMR) leaderStepAppendResp(m ReplicaMsg) []ReplicaMsg {
 	r.debuglog.Info("Prs of server %v: %+v", m.From, r.Prs[m.From])
 	r.debuglog.DebugVote("server %v vote [%v] for entry %v", m.From, m.Success, m.PrevIdx)
-	if m.Success == ReplyStatusSuccess && m.PrevIdx > r.RaftLog.commitAt() {
+	if m.Success == ReplyStatusSuccess && m.PrevIdx > r.SMRLog.commitAt() {
 		// if index.Term != r.Term, then index.entry is not belong to current leader.
-		indexTerm, _ := r.RaftLog.Term(m.PrevIdx)
+		indexTerm, _ := r.SMRLog.Term(m.PrevIdx)
 		if indexTerm == r.Term {
 			r.debuglog.Info("entriesVotes %v: %+v", m.PrevIdx, r.entriesVotes[m.PrevIdx])
 			idxVotes := r.entriesVotes[m.PrevIdx]
@@ -221,7 +198,7 @@ func (r Raft) leaderStepAppendResp(m ReplicaMsg) []ReplicaMsg {
 		if r.Prs[m.From].Match == 0 {
 			if m.PrevIdx == 0 {
 				// maybe useless, see heartbeat tick for detail
-				r.Prs[m.From].Next = r.RaftLog.firstIndex() + 1
+				r.Prs[m.From].Next = r.SMRLog.firstIndex() + 1
 			} else {
 				r.Prs[m.From].Next = m.PrevIdx + 1
 			}
@@ -236,46 +213,35 @@ func (r Raft) leaderStepAppendResp(m ReplicaMsg) []ReplicaMsg {
 		}
 	}
 	r.leaderCommitTo(m.PrevIdx)
-	/*
-		strange behavior when quiting from leaderStepAppendResp.
-		r.msgs will be deleted to 0 after calling sendHeartbeat.
-		so copy the content and re-assign values to r.msgs later.
-		check if this behavior still exist after upgrading golang.
 
-		update: r.msgs will be reset to 0x77d060 after return. but if we
-		return the address, then r.msgs will not be reset.
-	*/
-	// msgs := make([]pb.Message, len(r.msgs))
-	// copy(msgs, r.msgs)
-	// return msgs
 	return r.msgs
 }
 
 // make sure only commit once
-func (r *Raft) leaderCommitTo(idx uint64) {
+func (r *SMR) leaderCommitTo(idx uint64) {
 	if len(r.entriesVotes[idx]) == r.quorum {
 		r.debuglog.InfoCommit("gather enough votes for entry %v", idx)
-		r.RaftLog.commitLogTo(idx)
+		r.SMRLog.commitLogTo(idx)
 	}
 }
 
 // only when idx:term match current term, entriesVotes will have corresponding voting place.
-func (r *Raft) leaderRecordLocal(entry *Entry) {
-	// lastIdx := r.RaftLog.LastIndex()
+func (r *SMR) leaderRecordLocal(entry *Entry) {
+	// lastIdx := r.SMRLog.LastIndex()
 	// entry.Index = lastIdx + 1
 	entry.Term = r.Term
-	// idx := r.RaftLog.replaceEntry(entry)
-	idx := r.RaftLog.appendCmd(entry.Term, entry.Data)
+	// idx := r.SMRLog.replaceEntry(entry)
+	idx := r.SMRLog.appendCmd(entry.Term, entry.Data)
 	idxVotes := make(map[int]bool)
 	idxVotes[r.id] = true
 	r.entriesVotes[idx] = idxVotes
 	if len(r.entriesVotes[idx]) >= r.quorum {
-		r.RaftLog.commitLogTo(idx)
+		r.SMRLog.commitLogTo(idx)
 	}
 }
 
 // handleAppendEntries handle AppendEntries RPC request
-func (r *Raft) handleAppendEntries(m ReplicaMsg) {
+func (r *SMR) handleAppendEntries(m ReplicaMsg) {
 
 	reply := ReplicaMsg{
 		Type:    MsgTypeAppendReply,
@@ -295,23 +261,23 @@ func (r *Raft) handleAppendEntries(m ReplicaMsg) {
 	// 	if stale {
 	// 		if len(m.Entries) > 0 {
 	// 			r.HandleStaleEntries(m)
-	// 			reply.PrevIdx = r.RaftLog.LastIndex()
+	// 			reply.PrevIdx = r.SMRLog.LastIndex()
 	// 		} else {
 	// 			reply.PrevIdx = m.PrevIdx
-	// 			// reply.Index = r.RaftLog.LastIndex()
+	// 			// reply.Index = r.SMRLog.LastIndex()
 	// 		}
 	// 	} else {
 	// 		for _, e := range m.Entries {
-	// 			r.RaftLog.appendCmd(e.Term, e.Data)
+	// 			r.SMRLog.appendCmd(e.Term, e.Data)
 	// 		}
-	// 		reply.PrevIdx = r.RaftLog.LastIndex()
+	// 		reply.PrevIdx = r.SMRLog.LastIndex()
 	// 	}
 	// }
-	// r.debuglog.Info("last index: %v, msg commit: %v", r.RaftLog.LastIndex(), m.CommitTo)
+	// r.debuglog.Info("last index: %v, msg commit: %v", r.SMRLog.LastIndex(), m.CommitTo)
 	// // Should commit and apply in some place
-	// if reply.Success == ReplyStatusSuccess && m.CommitTo > r.RaftLog.commitAt() {
+	// if reply.Success == ReplyStatusSuccess && m.CommitTo > r.SMRLog.commitAt() {
 	// 	idx := min(reply.PrevIdx, m.CommitTo)
-	// 	r.RaftLog.commitLogTo(idx)
+	// 	r.SMRLog.commitLogTo(idx)
 	// }
 
 	// SEND_REPLY:
@@ -319,29 +285,29 @@ func (r *Raft) handleAppendEntries(m ReplicaMsg) {
 	r.msgs = append(r.msgs, reply)
 }
 
-func (r *Raft) HandleStaleEntries(m ReplicaMsg) {
-	lastIndex := r.RaftLog.LastIndex()
+func (r *SMR) HandleStaleEntries(m ReplicaMsg) {
+	lastIndex := r.SMRLog.LastIndex()
 	for i, mentry := range m.Entries {
 		if mentry.Index > lastIndex {
 			// msg has more entries that local doesn't have
-			r.RaftLog.truncateAndAppendEntries(mentry.Index, m.Entries[i:])
+			r.SMRLog.truncateAndAppendEntries(mentry.Index, m.Entries[i:])
 			break
 		}
-		localTerm, _ := r.RaftLog.Term(mentry.Index)
+		localTerm, _ := r.SMRLog.Term(mentry.Index)
 		if localTerm != mentry.Term {
 			// a previous entry is mismatched
-			r.RaftLog.truncateAndAppendEntries(mentry.Index, m.Entries[i:])
+			r.SMRLog.truncateAndAppendEntries(mentry.Index, m.Entries[i:])
 			break
 		}
 	}
 }
 
 // If lastIndex and lastTerm match a previous local entry, then `stale` is true
-func (r *Raft) safetyCheck(msgTerm, msgIndex uint64) (accept, stale bool) {
+func (r *SMR) safetyCheck(msgTerm, msgIndex uint64) (accept, stale bool) {
 
-	lastEntry := r.RaftLog.lastEntry()
+	lastEntry := r.SMRLog.lastEntry()
 	if msgIndex < lastEntry.Index {
-		targetTerm, _ := r.RaftLog.Term(msgIndex)
+		targetTerm, _ := r.SMRLog.Term(msgIndex)
 		if msgTerm != targetTerm {
 			return false, false
 		} else {

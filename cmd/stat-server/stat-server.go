@@ -14,7 +14,7 @@ import (
 )
 
 var cfgClientMachineNum int = 2
-var cfgClientControlAddr [2]string = [2]string{"10.1.6.236:10111", "10.1.6.232:10111"}
+var cfgClientControlAddr [2]string = [2]string{"localhost:10111", "10.1.6.232:10111"}
 
 var clientCtrlStubs []*rpc.Client
 var finishOneTest chan bool
@@ -169,7 +169,6 @@ func runTest(counts, cnums int) {
 				counts = 100000
 			}
 			args := &mpserverv2.StartTestArgs{
-				TestCount:  counts,
 				ClientNums: cnums,
 			}
 			reply := &mpserverv2.StartTestReply{}

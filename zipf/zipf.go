@@ -117,22 +117,67 @@ func (z *Zipfian) Next(r *rand.Rand) int64 {
 var cfgSkewness float64
 var cfgItems int
 
+type occurrence struct {
+	index int
+	count int
+}
+
+type occurrences []occurrence
+
+func (p occurrences) Len() int {
+	return len(p)
+}
+
+func (p occurrences) Less(i, j int) bool {
+	return p[i].count > p[j].count
+}
+
+func (p occurrences) Swap(i, j int) {
+	p[i], p[j] = p[j], p[i]
+}
+
 func main() {
 	flag.Float64Var(&cfgSkewness, "skewness", 0.5, "theta of zipf distribution")
-	flag.IntVar(&cfgItems, "items", 0xfff, "number of keys for request")
+	flag.IntVar(&cfgItems, "items", 0x1000, "number of keys for request")
 	flag.Parse()
 
 	zipfGen := NewZipfianWithItems(int64(cfgItems), cfgSkewness)
 	ran := rand.New(rand.NewSource(0))
 
+	ranAsso := make(map[int]int) // mapping from 0~cfgItems to random keys
+	occRan := rand.New(rand.NewSource(time.Now().UnixNano()))
+	newIdx := 0
+	for {
+		tryIdx := occRan.Intn(cfgItems)
+		if len(ranAsso) == cfgItems {
+			break
+		}
+		if _, ok := ranAsso[tryIdx]; ok {
+			continue
+		}
+		ranAsso[tryIdx] = newIdx
+		newIdx += 1
+	}
+
+	total := 100000
+	newSeq := make([]int, total)
 	order := make([]int, cfgItems)
-	for i := 0; i < 100000; i++ {
+	for i := 0; i < total; i++ {
 		num := zipfGen.Next(ran)
 		// log.Printf("num = %v", num)
-		order[num] += 1
+		newNum := ranAsso[int(num)]
+		order[newNum] += 1
+		newSeq[i] = newNum
 	}
 	for i := range order {
 		log.Printf("i %v: %v", i, order[i])
 	}
-	// log.Printf("0: %v", order[0])
+
+	// occ := make([]occurrence, cfgItems)
+
+	// sort.Sort(occurrences(occ))
+	// for i := range occ {
+	// 	log.Printf("i %v: %v", i, occ[i])
+	// }
+
 }

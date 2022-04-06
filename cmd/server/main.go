@@ -18,6 +18,7 @@ var clientPort string = "9990"
 var guidancePort string = "9996"
 var replicaID int
 var serveraddrs string
+var curp bool
 
 var randS []byte
 var randSLen int = 1000
@@ -36,10 +37,13 @@ func randomString(length int) []byte {
 	return str
 }
 
+// ./server -id 0 -saddr 'localhost:4567,localhost:4568,localhost:4569' -cport 9990
 func main() {
 	flag.IntVar(&replicaID, "id", -1, "replica unique id")
 	flag.StringVar(&serveraddrs, "saddr", "", "server addrs, separated by ;")
 	flag.StringVar(&clientPort, "cport", "9990", "client port for operational requests")
+	flag.StringVar(&guidancePort, "gport", "9996", "client port for GetGuidance")
+	flag.BoolVar(&curp, "curp", false, "enable curp replica")
 	flag.Parse()
 
 	if replicaID == -1 || len(serveraddrs) == 0 {
@@ -74,11 +78,8 @@ func main() {
 
 	serverEndpoint := &mpserverv2.RPCEndpoint{}
 	clientEndpoint := &mpserverv2.RPCEndpoint{}
-	guidanceEndpoint := &mpserverv2.GuidanceEndpoint{}
 	rpc.Register(serverEndpoint)
 	rpc.Register(clientEndpoint)
-	rpc.Register(guidanceEndpoint)
-	rpc.HandleHTTP()
 
 	startSrv := func(addr string, title string) {
 		l, err := net.Listen("tcp", addr)
@@ -91,30 +92,58 @@ func main() {
 			log.Printf("start http failed: %v", err)
 		}
 	}
-	go startSrv(":"+clientPort, "client op")
-	go startSrv(":"+guidancePort, "guidance")
-	go startSrv(replicaAddr[replicaID], "peer")
 
-	peersStub := ConnectPeers(replicaAddr, replicaID)
+	if curp {
+		log.Printf("start curp replica")
+		rpc.HandleHTTP()
+		go startSrv(":"+clientPort, "client op")
+		go startSrv(replicaAddr[replicaID], "peer")
+		peersStub := ConnectPeers(replicaAddr, replicaID)
 
-	msgCh := make(chan *mpserverv2.HandlerInfo)
-	guidanceCh := make(chan *mpserverv2.HandlerInfo)
+		msgCh := make(chan *mpserverv2.HandlerInfo)
+		serverEndpoint.MsgChan = msgCh
+		clientEndpoint.MsgChan = msgCh
 
-	config := mpserverv2.Config{
-		Guide:      defaultGuidance,
-		Store:      storage,
-		Peers:      peersStub,
-		Ch:         msgCh,
-		GuidanceCh: guidanceCh,
-		Me:         replicaID,
-		RaftLike:   true,
+		config := mpserverv2.Config{
+			Guide:    defaultGuidance,
+			Store:    storage,
+			Peers:    peersStub,
+			Ch:       msgCh,
+			Me:       replicaID,
+			RaftLike: true,
+		}
+
+		mpserverv2.CreateCURPReplica(config)
+	} else {
+		log.Printf("start normal replica")
+		guidanceEndpoint := &mpserverv2.GuidanceEndpoint{}
+		rpc.Register(guidanceEndpoint)
+		rpc.HandleHTTP()
+
+		go startSrv(":"+clientPort, "client op")
+		go startSrv(":"+guidancePort, "guidance")
+		go startSrv(replicaAddr[replicaID], "peer")
+		peersStub := ConnectPeers(replicaAddr, replicaID)
+
+		msgCh := make(chan *mpserverv2.HandlerInfo)
+		guidanceCh := make(chan *mpserverv2.HandlerInfo)
+
+		config := mpserverv2.Config{
+			Guide:      defaultGuidance,
+			Store:      storage,
+			Peers:      peersStub,
+			Ch:         msgCh,
+			GuidanceCh: guidanceCh,
+			Me:         replicaID,
+			RaftLike:   true,
+		}
+
+		mpserverv2.CreateReplica(&config)
+
+		serverEndpoint.MsgChan = msgCh
+		clientEndpoint.MsgChan = msgCh
+		guidanceEndpoint.MsgChan = guidanceCh
 	}
-
-	mpserverv2.CreateReplica(&config)
-
-	serverEndpoint.MsgChan = msgCh
-	clientEndpoint.MsgChan = msgCh
-	guidanceEndpoint.MsgChan = guidanceCh
 
 	select {}
 }
