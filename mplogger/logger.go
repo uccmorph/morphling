@@ -44,15 +44,15 @@ type debugOption struct {
 const debugOn = false
 
 var dos map[int]debugOption = map[int]debugOption{
-	0: {prefix: "ERROR", stackDepth: 1, enable: false, color: ErrorColor},
-	1: {prefix: "INFO", stackDepth: 1, enable: false, color: InfoColor},
-	2: {prefix: "ROLE-CHANGE", stackDepth: 1, enable: false, color: RoleChangeColor},
-	3: {prefix: "VOTE", stackDepth: 1, enable: false, color: GatherVoteColor},
-	4: {prefix: "SEND-ELECTION", stackDepth: 1, enable: false, color: SendColor1},
-	5: {prefix: "SEND-APPEND", stackDepth: 2, enable: false, color: SendColor2},
-	6: {prefix: "SEND-REPLY", stackDepth: 2, enable: false, color: SendColor3},
-	7: {prefix: "COMMIT", stackDepth: 1, enable: false, color: CommitColor},
-	8: {prefix: "DEEP-INFO", stackDepth: 2, enable: false, color: InfoColor},
+	0: {prefix: "ERROR", stackDepth: 1, enable: true, color: ErrorColor},
+	1: {prefix: "INFO", stackDepth: 1, enable: true, color: InfoColor},
+	2: {prefix: "ROLE-CHANGE", stackDepth: 1, enable: true, color: RoleChangeColor},
+	3: {prefix: "VOTE", stackDepth: 1, enable: true, color: GatherVoteColor},
+	4: {prefix: "SEND-ELECTION", stackDepth: 1, enable: true, color: SendColor1},
+	5: {prefix: "SEND-APPEND", stackDepth: 2, enable: true, color: SendColor2},
+	6: {prefix: "SEND-REPLY", stackDepth: 2, enable: true, color: SendColor3},
+	7: {prefix: "COMMIT", stackDepth: 1, enable: true, color: CommitColor},
+	8: {prefix: "DEEP-INFO", stackDepth: 2, enable: true, color: InfoColor},
 }
 
 type RaftLogger struct {

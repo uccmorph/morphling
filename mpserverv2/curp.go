@@ -49,8 +49,8 @@ func CreateCURPReplica(config Config) *CURPReplica {
 
 	p.peersStub = config.Peers
 	peers := []int{}
-	for key := range config.Peers {
-		peers = append(peers, key)
+	for id := range config.Peers {
+		peers = append(peers, id)
 	}
 	p.smrLog = newLog()
 	p.witness = newWitness()
@@ -149,12 +149,12 @@ func (p *CURPReplica) HandleReplicaMsg(info *HandlerInfo) {
 
 func (p *CURPReplica) predictExecuteWrite(cmd Command) {
 	keyStr := strconv.FormatUint(cmd.Key, 10)
-	p.storage.Set(CfDefault, []byte(keyStr), []byte(cmd.Value))
+	p.storage.Set([]byte(keyStr), []byte(cmd.Value))
 }
 
 func (p *CURPReplica) predictExecuteRead(cmd Command) []byte {
 	keyStr := strconv.FormatUint(cmd.Key, 10)
-	value := p.storage.Get(CfDefault, []byte(keyStr))
+	value := p.storage.Get([]byte(keyStr))
 
 	return value
 }

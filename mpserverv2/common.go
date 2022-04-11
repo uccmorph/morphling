@@ -18,20 +18,22 @@ const (
 	MsgTypeAppend
 	MsgTypeAppendReply
 	MsgTypeGossip
+	MsgTypeGossipEmptyReply
 )
 
 type ReplicaMsg struct {
-	Type          msgType
-	To            int
-	From          int
-	Success       replyStatus
-	KeyHash       uint64
-	Guide         *Guidance
-	CommitTo      uint64
-	PrevIdx       uint64
-	PrevEpoch     uint64
-	Entries       []*Entry
-	FastRewindIdx uint64
+	Type      msgType
+	To        int
+	From      int
+	Success   replyStatus
+	KeyHash   uint64
+	Guide     *Guidance
+	CommitTo  uint64
+	PrevIdx   uint64
+	PrevEpoch uint64
+	Entries   []*Entry
+
+	Load uint64
 }
 
 type ClientMsg struct {
@@ -83,64 +85,6 @@ const (
 	ReplyStatusNoValue
 	ReplyStatusInterfere
 )
-
-type ReplicaStatus struct {
-	Alive       bool
-	StartKeyPos uint64
-	EndKeyPos   uint64
-}
-
-func (p *ReplicaStatus) KeyisIn(pos uint64) bool {
-	if !p.Alive {
-		return false
-	}
-	if p.StartKeyPos > p.EndKeyPos {
-		if p.StartKeyPos <= pos && pos < defaultKeySpace {
-			return true
-		} else if 0 <= pos && pos < p.EndKeyPos {
-			return true
-		}
-	} else {
-		if p.StartKeyPos <= pos && pos < p.EndKeyPos {
-			return true
-		}
-	}
-	return false
-}
-
-type Guidance struct {
-	Epoch     uint64
-	GroupMask uint64 // KeyPos = KeyHash & GroupMask >> GroupSize. Like, 0x5498 & 0xff00 >> 8 = 0x54, then this key is in part 0x54
-	GroupSize uint64 // The number of  1 digits in KeyMask, however it can be deduced from GroupMask
-	Cluster   []ReplicaStatus
-}
-
-var defaultKeySpace uint64 = 256
-
-func (p *Guidance) InitDefault(size uint64) {
-	p.Epoch = 1
-	p.GroupMask = 0xff000000
-	p.GroupSize = 24
-	p.Cluster = make([]ReplicaStatus, size)
-	for i := range p.Cluster {
-		p.Cluster[i].Alive = true
-		p.Cluster[i].StartKeyPos = uint64(i) * defaultKeySpace / size
-		p.Cluster[i].EndKeyPos = uint64(i+1) * defaultKeySpace / size
-	}
-}
-
-func (p *Guidance) ReplicaID(pos uint64) int {
-	for i := range p.Cluster {
-		if p.Cluster[i].KeyisIn(pos) {
-			return i
-		}
-	}
-	return -1
-}
-
-func CalcKeyPos(key uint64, mask uint64, bits uint64) uint64 {
-	return key & mask >> bits
-}
 
 type HandlerInfo struct {
 	IsClient bool

@@ -97,6 +97,10 @@ func newSMR(id int, peers []int, debugLogger *mplogger.RaftLogger) *SMR {
 	return r
 }
 
+func (r *SMR) ChangeTerm(term uint64) {
+	r.Term = term
+}
+
 func (r *SMR) sendAppend(to int) bool {
 
 	// todo: send entries according to r.Prs

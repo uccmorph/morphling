@@ -232,7 +232,7 @@ func (p *MPClient) ReadKVFast(key uint64) (string, error) {
 		Seq:  p.seq,
 	}
 
-	keyPos := mpserverv2.CalcKeyPos(key, p.guide.GroupMask, p.guide.GroupSize)
+	keyPos := mpserverv2.CalcKeyPos(key)
 	sendTo := p.guide.ReplicaID(keyPos)
 	// log.Printf("key 0x%08x pos 0x%x send to replica %d", key, keyPos, sendTo)
 
@@ -364,7 +364,7 @@ func (p *MPClient) WriteKV(key uint64, value string) error {
 			Value: value,
 		},
 	}
-	keyPos := mpserverv2.CalcKeyPos(key, p.guide.GroupMask, p.guide.GroupSize)
+	keyPos := mpserverv2.CalcKeyPos(key)
 	sendTo := p.guide.ReplicaID(keyPos)
 
 	reply := &mpserverv2.ClientMsg{}

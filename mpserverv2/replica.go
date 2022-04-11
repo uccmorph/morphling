@@ -3,9 +3,11 @@ package mpserverv2
 import (
 	"fmt"
 	"log"
+	"math/rand"
 	"morphling/mplogger"
 	"net/rpc"
 	"strconv"
+	"time"
 )
 
 type Config struct {
@@ -28,9 +30,11 @@ type Replica struct {
 	storage        *MemStorage
 	clientPending  map[uint64]*HandlerInfo // uuid to client ctx
 	clientCmdIndex map[string]uint64       // entry info to uuid
+	enableRaft     bool
 
-	peersStub map[int]*rpc.Client
-	debugLog  *mplogger.RaftLogger
+	peersStub           map[int]*rpc.Client
+	debugLog            *mplogger.RaftLogger
+	weakFailureDetector map[int]int // replica id -> liveness counts
 }
 
 func CreateReplica(config *Config) *Replica {
@@ -45,18 +49,25 @@ func CreateReplica(config *Config) *Replica {
 	p.clientCmdIndex = make(map[string]uint64)
 
 	peers := []int{}
-	for key := range config.Peers {
-		peers = append(peers, key)
+	for id := range config.Peers {
+		peers = append(peers, id)
 	}
 
 	p.debugLog = mplogger.NewRaftDebugLogger()
-	p.raftCore = make([]*SMR, defaultKeySpace)
+	p.raftCore = make([]*SMR, DefaultKeySpace)
 	for i := range p.raftCore {
 		p.raftCore[i] = newSMR(config.Me, peers, p.debugLog)
+		p.raftCore[i].ChangeTerm(p.localGuidance.Epoch)
 	}
 
 	if config.CURPLike {
 		log.Fatalf("can not use CURP in generic replica")
+	}
+	p.enableRaft = config.RaftLike
+
+	p.weakFailureDetector = make(map[int]int)
+	for id := range config.Peers {
+		p.weakFailureDetector[id] = 0
 	}
 
 	go p.mainLoop()
@@ -65,6 +76,7 @@ func CreateReplica(config *Config) *Replica {
 }
 
 func (p *Replica) mainLoop() {
+	ticker := time.NewTimer(time.Millisecond * time.Duration(500+rand.Intn(500)))
 	for {
 		// p.debugLog.Info("waiting new msg...")
 
@@ -74,11 +86,15 @@ func (p *Replica) mainLoop() {
 			if msg.IsClient {
 				// p.debugLog.Info("get client msg: %+v", msg.CMsg)
 				p.HandleClientMsg(msg)
-
 			} else {
-
 				p.HandleReplicaMsg(msg)
 			}
+		case <-ticker.C:
+			p.bcastGossip()
+			for id := range p.peersStub {
+				p.weakFailureDetector[id] += 1
+			}
+			ticker = time.NewTimer(time.Millisecond * time.Duration(500+rand.Intn(500)))
 		}
 	}
 }
@@ -109,10 +125,10 @@ func (p *Replica) processCommit(pos uint64, entries []Entry) {
 		}
 		if entries[i].Data.Type == CommandTypeWrite {
 			keyStr := strconv.FormatUint(entries[i].Data.Key, 10)
-			p.storage.Set(CfDefault, []byte(keyStr), []byte(entries[i].Data.Value))
+			p.storage.Set([]byte(keyStr), []byte(entries[i].Data.Value))
 		} else if entries[i].Data.Type == CommandTypeRead {
 			keyStr := strconv.FormatUint(entries[i].Data.Key, 10)
-			value = p.storage.Get(CfDefault, []byte(keyStr))
+			value = p.storage.Get([]byte(keyStr))
 			if len(value) == 0 {
 				reply.Success = ReplyStatusNoValue
 			}
@@ -128,21 +144,47 @@ func (p *Replica) processCommit(pos uint64, entries []Entry) {
 	}
 }
 
-func (p *Replica) HandleReplicaMsg(msg *HandlerInfo) {
-	guide := p.localGuidance
-	args := msg.RMsg
-	pos := CalcKeyPos(args.KeyHash, guide.GroupMask, guide.GroupSize)
-	rlog := p.raftCore[pos]
-	p.debugLog.Info("process log group %v", pos)
-	rlog.Step(*args)
-	commitEntries := rlog.SMRLog.nextEnts()
-	p.processCommit(pos, commitEntries)
-	rlog.SMRLog.updateApply(commitEntries)
-	msgs := rlog.readNextMsg()
-	for i := range msgs {
-		msgs[i].KeyHash = args.KeyHash
+func (p *Replica) HandleReplicaMsg(info *HandlerInfo) {
+	args := info.RMsg
+
+	if !p.enableRaft {
+		if args.Guide.Epoch < p.localGuidance.Epoch {
+			log.Printf("peer %d is stale %+v. local %+v", args.From, args.Guide, p.localGuidance)
+		}
+		if args.Guide.Epoch > p.localGuidance.Epoch {
+			log.Printf("local is stale %+v. peer %+v", p.localGuidance, args.Guide)
+			log.Printf("shift guidance to %+v", args.Guide)
+			p.localGuidance.CopyFrom(args.Guide)
+		}
 	}
-	p.sendReplicaMsgs(msgs)
+	switch args.Type {
+	case MsgTypeAppend, MsgTypeAppendReply:
+		pos := CalcKeyPos(args.KeyHash)
+		rlog := p.raftCore[pos]
+		p.debugLog.Info("process smr part %v", pos)
+		rlog.Step(*args)
+		commitEntries := rlog.SMRLog.nextEnts()
+		p.processCommit(pos, commitEntries)
+		rlog.SMRLog.updateApply(commitEntries)
+		msgs := rlog.readNextMsg()
+		for i := range msgs {
+			msgs[i].KeyHash = args.KeyHash
+			switch msgs[i].Type {
+			case MsgTypeAppendReply:
+				p.replyReplicaMsgs(&msgs[i], info.Res)
+			case MsgTypeAppend:
+				p.sendReplicaMsgs(&msgs[i])
+			}
+
+		}
+	case MsgTypeGossip:
+		log.Printf("receive gossip msg from %v, guidance: %+v, load: %v",
+			args.From, args.Guide, args.Load)
+		p.weakFailureDetector[args.From] = 0
+		info.RMsg.Type = MsgTypeGossipEmptyReply
+		info.Res <- info
+	}
+
 }
 
 func (p *Replica) HandleClientMsg(msg *HandlerInfo) {
@@ -168,7 +210,7 @@ func (p *Replica) HandleClientMsg(msg *HandlerInfo) {
 	case MsgTypeClientRead:
 		if guide.Epoch == args.Guide.Epoch {
 			keyStr := strconv.FormatUint(args.KeyHash, 10)
-			value := p.storage.Get(CfDefault, []byte(keyStr))
+			value := p.storage.Get([]byte(keyStr))
 			// p.debugLog.Printf("key = %v, value = %v", keyStr, value)
 			reply.Data = value
 			reply.KeyHash = args.KeyHash
@@ -183,13 +225,13 @@ func (p *Replica) HandleClientMsg(msg *HandlerInfo) {
 	// for replicated write
 	case MsgTypeClientWrite:
 		keyStr := strconv.FormatUint(args.KeyHash, 10)
-		p.storage.Set(CfDefault, []byte(keyStr), []byte(args.Command.Value))
+		p.storage.Set([]byte(keyStr), []byte(args.Command.Value))
 
 		replyInfo.Res <- replyInfo
 
 	// for morphling write and raft write
 	case MsgTypeClientProposal:
-		pos := CalcKeyPos(args.KeyHash, guide.GroupMask, guide.GroupSize)
+		pos := CalcKeyPos(args.KeyHash)
 		rlog := p.raftCore[pos]
 		replicaMsg := ReplicaMsg{
 			Type:    MsgTypeClientProposal,
@@ -215,30 +257,61 @@ func (p *Replica) HandleClientMsg(msg *HandlerInfo) {
 		msgs := rlog.readNextMsg()
 		for i := range msgs {
 			msgs[i].KeyHash = args.KeyHash
+			p.sendReplicaMsgs(&msgs[i])
 		}
-		p.sendReplicaMsgs(msgs)
 
 		rlog.SMRLog.updateStable(entries)
 	}
 }
 
-func (p *Replica) prepareGuidanceTransfer(new *Guidance) {}
+// `to` replica should be set in msg.To
+func (p *Replica) sendReplicaMsgs(msg *ReplicaMsg) {
+	peer := p.peersStub[msg.To]
+	go func(peer *rpc.Client, msg *ReplicaMsg) {
+		reply := &ReplicaMsg{}
+		err := peer.Call("RPCEndpoint.ReplicaCall", msg, reply)
+		if err != nil {
+			p.debugLog.Error("call RPCEndpoint.ReplicaCall error: %v", err)
+		}
+		info := &HandlerInfo{
+			IsClient: false,
+			RMsg:     reply,
+		}
+		// log.Printf("finish sendAppendMsg, reply: %+v", info.Reply)
+		p.msgCh <- info
+	}(peer, msg)
+}
 
-func (p *Replica) sendReplicaMsgs(msgs []ReplicaMsg) {
-	for i := range msgs {
-		peer := p.peersStub[msgs[i].To]
-		go func(peer *rpc.Client, msg ReplicaMsg) {
-			reply := &ReplicaMsg{}
-			err := peer.Call("RPCEndpoint.ReplicaCall", msg, reply)
-			if err != nil {
-				p.debugLog.Error("call RPCEndpoint.ReplicaCall error: %v", err)
-			}
-			info := &HandlerInfo{
-				IsClient: false,
-				RMsg:     reply,
-			}
-			// log.Printf("finish sendAppendMsg, reply: %+v", info.Reply)
-			p.msgCh <- info
-		}(peer, msgs[i])
+func (p *Replica) replyReplicaMsgs(reply *ReplicaMsg, replyCh chan *HandlerInfo) {
+	replyInfo := &HandlerInfo{
+		IsClient: false,
+		RMsg:     reply,
+	}
+	replyCh <- replyInfo
+}
+
+func (p *Replica) gossip(to int) {
+	msg := &ReplicaMsg{
+		Type:  MsgTypeGossip,
+		From:  p.me,
+		To:    to,
+		Guide: &p.localGuidance,
+	}
+	go func(msg *ReplicaMsg) {
+		reply := &ReplicaMsg{}
+		err := p.peersStub[to].Call("RPCEndpoint.ReplicaCall", msg, reply)
+		if err != nil {
+			p.debugLog.Error("call RPCEndpoint.ReplicaCall error: %v", err)
+		}
+		// don't use p.msgCh
+	}(msg)
+}
+
+func (p *Replica) bcastGossip() {
+	for i := range p.peersStub {
+		if i == p.me {
+			continue
+		}
+		p.gossip(i)
 	}
 }

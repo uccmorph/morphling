@@ -37,7 +37,7 @@ func randomString(length int) []byte {
 	return str
 }
 
-// ./server -id 0 -saddr 'localhost:4567,localhost:4568,localhost:4569' -cport 9990
+// ./server -id 0 -saddr 'localhost:4567,localhost:4568,localhost:4569' -cport 9990 -gport 9993
 func main() {
 	flag.IntVar(&replicaID, "id", -1, "replica unique id")
 	flag.StringVar(&serveraddrs, "saddr", "", "server addrs, separated by ;")
@@ -67,7 +67,6 @@ func main() {
 				Data: mpserverv2.Put{
 					Key:   []byte(strconv.FormatUint(uint64(i), 10)),
 					Value: randomString(randSLen),
-					Cf:    mpserverv2.CfDefault,
 				},
 			},
 		}
